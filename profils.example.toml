@@ -1,0 +1,64 @@
+# Copie ce fichier en profils.toml et adapte-le. Aucun mot de passe ici : ils vont dans le .env.
+
+[agent]
+modele = "sonnet"     # sonnet (bon équilibre), opus (questions difficiles), haiku (rapide) ; vide = défaut
+effort = "medium"     # low, medium, high, xhigh, max ; vide = défaut
+max_tours = 40        # étapes (outils appelés) au plus par question
+budget_usd = 1.0      # coût maximal par question, en dollars (0 = aucun plafond)
+requetes_base = 15    # accès base au plus par question
+
+# ---------------------------------------------------------------------------------------------
+# Odatio sur ton poste : sources locales, logs locaux, base locale
+# ---------------------------------------------------------------------------------------------
+[profils.local]
+description = "Odatio lancé sur mon poste"
+
+[[profils.local.sources]]
+nom = "standard"
+chemin = "C:/dev/odatio-standard"
+
+[[profils.local.sources]]
+nom = "client-x"
+chemin = "C:/dev/client-x"
+
+[profils.local.logs]
+dossiers = ["C:/odatio/logs"]
+
+[profils.local.base]
+type = "postgresql"              # postgresql, oracle, sqlserver, mysql
+hote = "localhost"
+port = "5432"
+nom = "odatio"
+utilisateur = "lecture_seule"    # un compte base en LECTURE SEULE, toujours
+schema = "public"
+mot_de_passe_env = "LOCAL_DB_PASSWORD"
+
+# ---------------------------------------------------------------------------------------------
+# Recette d'un client : dépôts Bitbucket clonés automatiquement, logs groundcover, base distante
+# ---------------------------------------------------------------------------------------------
+[profils.recette-x]
+description = "Recette du client X"
+fichiers_interdits = ["application-secrets*.properties"]   # en plus des .env, clés, keystores…
+
+[[profils.recette-x.sources]]
+nom = "standard"
+depot = "https://git.kiscloud.io/scm/STD/odatio-standard.git"
+branche = "integration"
+
+[[profils.recette-x.sources]]
+nom = "client-x"
+depot = "https://git.kiscloud.io/scm/CLIENTX/client-x.git"
+branche = "dev"
+
+[profils.recette-x.logs]
+dossiers = ["//serveur-recette/logs/odatio"]     # partage réseau, facultatif
+groundcover_filtre = "namespace:client-x-recette" # facultatif ; imposé à toute recherche
+
+[profils.recette-x.base]
+type = "oracle"
+hote = "db-recette-x.interne"
+port = "1521"
+nom = "ODATIO"
+utilisateur = "LECTURE_SEULE"
+schema = "ODATIO"
+mot_de_passe_env = "RECETTE_X_DB_PASSWORD"

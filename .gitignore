@@ -1,0 +1,15 @@
+# Configuration personnelle
+.env
+profils.toml
+
+# Clones des dépôts, journal
+.cache/
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+.idea/
+.vscode/

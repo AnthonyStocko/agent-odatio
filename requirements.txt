@@ -1,0 +1,13 @@
+claude-agent-sdk>=0.2
+python-dotenv>=1.0
+requests>=2.31
+sqlalchemy>=2.0
+
+# Pilote de la base Odatio : décommente celui qu'il te faut
+psycopg2-binary>=2.9   # PostgreSQL
+# oracledb             # Oracle
+# pymssql              # SQL Server
+# pymysql              # MySQL
+
+# Facultatif : serveur MCP (mcp_server.py)
+# mcp>=2,<3
