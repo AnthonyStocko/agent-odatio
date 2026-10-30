@@ -1,6 +1,7 @@
 # Configuration personnelle
 .env
 profils.toml
+profils.toml.bak
 
 # Clones des dépôts, journal
 .cache/

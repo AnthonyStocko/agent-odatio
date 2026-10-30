@@ -11,11 +11,12 @@ lancé par le SDK n'hérite ainsi d'aucun mot de passe ni jeton.
 """
 import os
 import re
+import shutil
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from dotenv import dotenv_values
+from dotenv import dotenv_values, set_key, unset_key
 
 RACINE = Path(__file__).resolve().parent.parent
 FICHIER_PROFILS = RACINE / "profils.toml"
@@ -100,6 +101,50 @@ def secret(nom: str) -> str:
     return (_SECRETS.get(nom) or "").strip() if nom else ""
 
 
+def enregistrer_secrets(valeurs: dict) -> None:
+    """Écrit des valeurs dans le .env (une valeur vide supprime la ligne) et les met à jour en mémoire."""
+    if not FICHIER_SECRETS.exists():
+        FICHIER_SECRETS.touch()
+    for nom, valeur in valeurs.items():
+        valeur = (valeur or "").strip()
+        if valeur:
+            set_key(str(FICHIER_SECRETS), nom, valeur, quote_mode="never")
+            _SECRETS[nom] = valeur
+        else:
+            if nom in dotenv_values(FICHIER_SECRETS):
+                unset_key(str(FICHIER_SECRETS), nom)
+            _SECRETS.pop(nom, None)
+
+
+def nom_mot_de_passe(profil: str) -> str:
+    """Nom de la variable du .env qui porte le mot de passe base d'un profil (ex. DB_PASSWORD_RECETTE_X)."""
+    return "DB_PASSWORD_" + re.sub(r"[^A-Z0-9]+", "_", profil.upper()).strip("_")
+
+
+# ---------------------------------------------------------------------------
+# Compte Claude et Jira (réglages du .env)
+# ---------------------------------------------------------------------------
+
+def compte_claude() -> dict:
+    """{"mode": "compte" ou "cle", "dossier": CLAUDE_CONFIG_DIR, "cle": ANTHROPIC_API_KEY}. Sans choix
+    enregistré, la clé est utilisée si elle est renseignée (comportement des premières versions)."""
+    cle = secret("ANTHROPIC_API_KEY")
+    mode = secret("CLAUDE_AUTH") or ("cle" if cle else "compte")
+    return {"mode": mode, "dossier": secret("CLAUDE_CONFIG_DIR"), "cle": cle}
+
+
+def env_claude() -> dict:
+    """Variables à passer au processus Claude Code selon le compte choisi."""
+    compte = compte_claude()
+    if compte["mode"] == "cle" and compte["cle"]:
+        return {"ANTHROPIC_API_KEY": compte["cle"]}
+    return {"CLAUDE_CONFIG_DIR": os.path.expanduser(compte["dossier"])} if compte["dossier"] else {}
+
+
+def jira_configure() -> bool:
+    return all(secret(n) for n in ("JIRA_DOMAIN", "JIRA_EMAIL", "JIRA_API_TOKEN"))
+
+
 # ---------------------------------------------------------------------------
 # Profils
 # ---------------------------------------------------------------------------
@@ -116,6 +161,8 @@ def _lire_toml() -> dict:
 
 
 def reglages() -> Reglages:
+    if not FICHIER_PROFILS.exists():
+        return Reglages()
     brut = _lire_toml().get("agent", {})
     return Reglages(modele=str(brut.get("modele", "")).strip(), effort=str(brut.get("effort", "")).strip(),
                     max_tours=int(brut.get("max_tours", 40)), budget_usd=float(brut.get("budget_usd", 0)),
@@ -123,14 +170,26 @@ def reglages() -> Reglages:
 
 
 def noms_profils() -> list:
+    if not FICHIER_PROFILS.exists():
+        return []
     return list(_lire_toml().get("profils", {}))
 
 
-def charger_profil(nom: str) -> Profil:
+def charger_profil(nom: str, interdits_par_defaut: bool = True) -> Profil:
     profils = _lire_toml().get("profils", {})
     if nom not in profils:
         raise ConfigError(f"Profil « {nom} » inconnu. Profils disponibles : {', '.join(profils) or 'aucun'}.")
-    brut = profils[nom]
+    return _profil(nom, profils[nom], interdits_par_defaut)
+
+
+def tous_les_profils() -> list:
+    """Profils tels qu'écrits (sans les fichiers interdits par défaut), pour l'écran de configuration."""
+    if not FICHIER_PROFILS.exists():
+        return []
+    return [_profil(nom, brut, False) for nom, brut in _lire_toml().get("profils", {}).items()]
+
+
+def _profil(nom: str, brut: dict, interdits_par_defaut: bool) -> Profil:
 
     sources = []
     for i, s in enumerate(brut.get("sources", []), start=1):
@@ -158,4 +217,44 @@ def charger_profil(nom: str) -> Profil:
     return Profil(nom=nom, description=str(brut.get("description", "")).strip(), sources=sources,
                   dossiers_logs=[str(d) for d in logs.get("dossiers", [])],
                   groundcover_filtre=str(logs.get("groundcover_filtre", "")).strip(), base=base,
-                  fichiers_interdits=INTERDITS_PAR_DEFAUT + [str(m) for m in brut.get("fichiers_interdits", [])])
+                  fichiers_interdits=(INTERDITS_PAR_DEFAUT if interdits_par_defaut else [])
+                  + [str(m) for m in brut.get("fichiers_interdits", [])])
+
+
+NOM_PROFIL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$")
+
+
+def enregistrer(reglages_agent: Reglages, profils: list) -> None:
+    """Réécrit profils.toml (l'ancienne version est gardée en profils.toml.bak). Les commentaires du fichier
+    ne sont pas conservés : l'écran de configuration devient la référence."""
+    import tomli_w
+
+    for p in profils:
+        if not NOM_PROFIL.match(p.nom):
+            raise ConfigError(f"Nom de profil invalide : « {p.nom} » (lettres, chiffres, - et _ ; sans espace).")
+        if not p.sources:
+            raise ConfigError(f"Profil « {p.nom} » : au moins une source est nécessaire.")
+    if len({p.nom for p in profils}) != len(profils):
+        raise ConfigError("Deux profils portent le même nom.")
+
+    donnees = {"agent": {k: v for k, v in asdict(reglages_agent).items()}, "profils": {}}
+    for p in profils:
+        brut = {"description": p.description} if p.description else {}
+        if p.fichiers_interdits:
+            brut["fichiers_interdits"] = list(p.fichiers_interdits)
+        brut["sources"] = [{k: v for k, v in asdict(s).items() if v} for s in p.sources]
+        logs = {}
+        if p.dossiers_logs:
+            logs["dossiers"] = list(p.dossiers_logs)
+        if p.groundcover_filtre:
+            logs["groundcover_filtre"] = p.groundcover_filtre
+        if logs:
+            brut["logs"] = logs
+        if p.base:
+            brut["base"] = {k: v for k, v in asdict(p.base).items() if v}
+        donnees["profils"][p.nom] = brut
+
+    if FICHIER_PROFILS.exists():
+        shutil.copyfile(FICHIER_PROFILS, FICHIER_PROFILS.with_suffix(".toml.bak"))
+    with open(FICHIER_PROFILS, "wb") as f:
+        tomli_w.dump(donnees, f)

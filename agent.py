@@ -5,6 +5,7 @@ Agent fonctionnel Odatio — conversation en ligne de commande.
   python agent.py --profil local --test           vérifie sources, logs, base et groundcover
   python agent.py --profil local                  conversation
   python agent.py --profil local --question "Comment est calculée la date de préparation ?"
+  python agent.py --profil local --ticket ODA-1234       conversation sur une tâche Jira à tester
 
 En conversation : /nouveau repart d'une conversation vide, /quitter (ou Ctrl+D) termine.
 """
@@ -34,13 +35,14 @@ async def _poser(session: Session, question: str, racines: list) -> None:
     print(f"{GRIS}— {etat}{bilan.tours} étape(s), {cout}{FIN}\n")
 
 
-async def converser(profil: config.Profil, reglages: config.Reglages, question: str, maj: bool) -> int:
+async def converser(profil: config.Profil, reglages: config.Reglages, question: str, maj: bool,
+                    ticket: dict | None = None) -> int:
     prets = sources.preparer(profil, mettre_a_jour=maj)
     logs = sources.dossiers_logs(profil)
     racines = [chemin for _, chemin in prets] + logs
     utilisateur = getpass.getuser()
 
-    session = Session(profil, prets, logs, reglages, utilisateur)
+    session = Session(profil, prets, logs, reglages, utilisateur, ticket=ticket)
     await session.ouvrir()
     try:
         if question:
@@ -59,7 +61,7 @@ async def converser(profil: config.Profil, reglages: config.Reglages, question: 
                 return 0
             if saisie == "/nouveau":
                 await session.fermer()
-                session = Session(profil, prets, logs, reglages, utilisateur)
+                session = Session(profil, prets, logs, reglages, utilisateur, ticket=ticket)
                 await session.ouvrir()
                 print(f"{GRIS}Nouvelle conversation.{FIN}\n")
                 continue
@@ -96,6 +98,7 @@ def main() -> int:
     parser.add_argument("--question", default="", help="pose une seule question puis termine")
     parser.add_argument("--test", action="store_true", help="vérifie la configuration du profil")
     parser.add_argument("--liste", action="store_true", help="liste les profils")
+    parser.add_argument("--ticket", default="", help="tâche Jira à tester, donnée à l'agent comme contexte")
     parser.add_argument("--sans-maj", action="store_true", help="ne met pas à jour les dépôts déjà clonés")
     args = parser.parse_args()
 
@@ -109,8 +112,11 @@ def main() -> int:
         profil = config.charger_profil(args.profil)
         if args.test:
             return tester(profil, not args.sans_maj)
-        return asyncio.run(converser(profil, config.reglages(), args.question, not args.sans_maj))
-    except (config.ConfigError, sources.SourceError) as e:
+        ticket = outils.jira_ticket(args.ticket, profil) if args.ticket else None
+        if ticket:
+            print(f"{GRIS}Tâche {ticket['cle']} : {ticket['titre']}{FIN}")
+        return asyncio.run(converser(profil, config.reglages(), args.question, not args.sans_maj, ticket))
+    except (config.ConfigError, sources.SourceError, outils.OutilErreur) as e:
         print(f"{ROUGE}{e}{FIN}")
         return 2
 

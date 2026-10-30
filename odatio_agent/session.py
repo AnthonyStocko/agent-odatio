@@ -31,18 +31,18 @@ def _texte(texte: str, erreur: bool = False) -> dict:
 
 class Session:
     def __init__(self, profil: config.Profil, sources: list, logs: list, reglages: config.Reglages,
-                 utilisateur: str = "", reprise: str = ""):
+                 utilisateur: str = "", reprise: str = "", ticket: dict | None = None):
         """reprise : identifiant d'une conversation précédente à poursuivre (Bilan.session_id), utilisé par
-        l'IHM qui ouvre une session par question."""
+        l'IHM qui ouvre une session par question. ticket : tâche Jira à tester (outils.jira_ticket), donnée
+        à l'agent comme contexte."""
         self.profil, self.reglages = profil, reglages
         self.requetes_base = 0
         racines = [chemin for _, chemin in sources] + list(logs)
         outils_maison = self._outils_maison()
         noms_maison = [f"mcp__{SERVEUR}__{t.name}" for t in outils_maison]
 
-        cle_api = config.secret("ANTHROPIC_API_KEY")
         self.options = ClaudeAgentOptions(
-            system_prompt=consignes.construire(profil, sources, logs, utilisateur, reglages),
+            system_prompt=consignes.construire(profil, sources, logs, utilisateur, reglages, ticket),
             tools=OUTILS_FICHIERS,                       # aucun autre outil intégré : ni Bash, ni Edit, ni Write
             allowed_tools=OUTILS_FICHIERS + noms_maison,  # autorisés sans confirmation
             permission_mode="dontAsk",                    # tout le reste est refusé
@@ -57,7 +57,7 @@ class Session:
             max_budget_usd=reglages.budget_usd or None,
             model=reglages.modele or None,
             effort=reglages.effort or None,
-            env={"ANTHROPIC_API_KEY": cle_api} if cle_api else {},
+            env=config.env_claude(),                      # compte Claude choisi (abonnement ou clé API)
             resume=reprise or None,
         )
         self.client = ClaudeSDKClient(self.options)
@@ -113,6 +113,19 @@ class Session:
                                       args.get("recherche", ""), int(args.get("limite") or 50))
 
             liste.append(logs_rechercher)
+
+        if config.jira_configure():
+            @tool("jira_ticket", "Lit un ticket Jira (titre, description, épopée parente, fiches liées), en lecture "
+                  "seule. Utile pour un ticket cité dans la question ou lié à la tâche étudiée.",
+                  {"type": "object", "properties": {"cle": {"type": "string", "description": "ex. ODA-1234"}},
+                   "required": ["cle"]})
+            async def jira_ticket(args):
+                try:
+                    return _texte(outils.jira_ticket(args["cle"], profil)["texte"])
+                except outils.OutilErreur as e:
+                    return _texte(f"ERREUR : {e}", True)
+
+            liste.append(jira_ticket)
         return liste
 
     # -- Conversation -------------------------------------------------------------------------------

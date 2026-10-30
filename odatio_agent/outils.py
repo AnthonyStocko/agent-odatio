@@ -11,15 +11,21 @@ import os
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-from tools import db_tools, groundcover_tools
+import re
+
+import requests
+
+from tools import db_tools, groundcover_tools, jira_tools
 from tools.secret_tools import mask_secrets, register_secrets
 
 from . import config
 
-config.retirer_secrets_environnement()  # db_tools vient de charger le .env dans os.environ
+config.retirer_secrets_environnement()  # db_tools et jira_tools viennent de charger le .env dans os.environ
 
 FENETRE_LOGS_MAX = groundcover_tools.MAX_WINDOW
 LIGNES_LOGS_MAX = groundcover_tools.MAX_LINES
+TICKET_MAX = 12000                   # caractères du contexte d'un ticket Jira donné à l'agent
+CLE_JIRA = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$")
 
 
 class OutilErreur(Exception):
@@ -27,21 +33,22 @@ class OutilErreur(Exception):
 
 
 @contextmanager
-def _environnement(profil: config.Profil):
-    valeurs = {}
-    if profil.base:
+def _environnement(profil: config.Profil | None):
+    valeurs = {"JIRA_DOMAIN": config.secret("JIRA_DOMAIN"), "JIRA_EMAIL": config.secret("JIRA_EMAIL"),
+               "JIRA_API_TOKEN": config.secret("JIRA_API_TOKEN")}
+    if profil is not None and profil.base:
         b = profil.base
         mot_de_passe = config.secret(b.mot_de_passe_env)
         register_secrets([mot_de_passe])
         valeurs.update({"DB_TYPE": b.type, "DB_HOST": b.hote, "DB_PORT": b.port, "DB_NAME": b.nom,
                         "DB_USER": b.utilisateur, "DB_PASSWORD": mot_de_passe, "DB_SCHEMA": b.schema})
-    if profil.groundcover_filtre:
+    if profil is not None and profil.groundcover_filtre:
         valeurs.update({"CUCUMBER_GROUNDCOVER_FILTER": profil.groundcover_filtre,
                         "GROUNDCOVER_API_KEY": config.secret("GROUNDCOVER_API_KEY"),
                         "GROUNDCOVER_BACKEND_ID": config.secret("GROUNDCOVER_BACKEND_ID"),
                         "GROUNDCOVER_API_URL": config.secret("GROUNDCOVER_API_URL")})
     avant = {k: os.environ.get(k) for k in valeurs}
-    os.environ.update(valeurs)
+    os.environ.update({k: v or "" for k, v in valeurs.items()})
     db_tools.set_profile("")
     try:
         yield
@@ -53,13 +60,13 @@ def _environnement(profil: config.Profil):
                 os.environ[nom] = valeur
 
 
-def _journal(profil: config.Profil, outil: str, details: dict, erreur: str = "") -> None:
+def _journal(profil: config.Profil | None, outil: str, details: dict, erreur: str = "") -> None:
     """Trace des appels (.cache/journal/outils.jsonl) : outil, tables lues, erreur ; jamais le texte d'une
     requête ni les données renvoyées, qui peuvent être nominatives."""
     try:
         dossier = config.CACHE / "journal"
         dossier.mkdir(parents=True, exist_ok=True)
-        entree = {"date": datetime.now().isoformat(timespec="seconds"), "profil": profil.nom, "outil": outil,
+        entree = {"date": datetime.now().isoformat(timespec="seconds"), "profil": profil.nom if profil else "", "outil": outil,
                   **details, "ok": not erreur, "erreur": erreur[:300]}
         with open(dossier / "outils.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(entree, ensure_ascii=False) + "\n")
@@ -126,12 +133,63 @@ def logs_rechercher(profil: config.Profil, debut: str, fin: str, recherche: str 
     return "\n".join(groundcover_tools.format_row(r) for r in lignes) or "(aucune ligne)"
 
 
+# ---------------------------------------------------------------------------
+# Jira (lecture seule)
+# ---------------------------------------------------------------------------
+
+def jira_ticket(cle: str, profil: config.Profil | None = None) -> dict:
+    """Ticket Jira et son contexte (épopée parente, fiches COST liées) :
+    {"cle", "titre", "texte"} où texte est un Markdown borné à TICKET_MAX caractères."""
+    cle = (cle or "").strip().upper()
+    if not CLE_JIRA.match(cle):
+        raise OutilErreur(f"Clé de ticket invalide : « {cle} » (format attendu : PROJET-123).")
+    if not config.jira_configure():
+        raise OutilErreur("Jira n'est pas configuré (onglet Configuration).")
+    with _environnement(None):
+        donnees = jira_tools.get_full_jira_issue_context(cle)
+    if donnees.get("error"):
+        _journal(profil, "jira_ticket", {"ticket": cle}, donnees["error"])
+        raise OutilErreur(mask_secrets(donnees["error"])[0])
+    _journal(profil, "jira_ticket", {"ticket": cle})
+    blocs = [f"# {cle} — {donnees.get('summary', '')}"]
+    if donnees.get("components"):
+        blocs.append("Composants : " + ", ".join(donnees["components"]))
+    blocs.append(donnees.get("description") or "(pas de description)")
+    epopee = donnees.get("epic") or {}
+    if epopee:
+        blocs.append(f"## Épopée {epopee.get('key')} — {epopee.get('summary', '')}\n{epopee.get('description') or ''}")
+    for fiche in donnees.get("costs") or []:
+        blocs.append(f"## Fiche liée {fiche.get('key')} — {fiche.get('summary', '')}\n{fiche.get('description') or ''}")
+    texte = mask_secrets("\n\n".join(blocs))[0]
+    if len(texte) > TICKET_MAX:
+        texte = texte[:TICKET_MAX] + "\n\n[… contexte tronqué]"
+    return {"cle": cle, "titre": donnees.get("summary", ""), "texte": texte}
+
+
+def tester_jira() -> tuple:
+    """(ok, message) : identifiants Jira valides ?"""
+    if not config.jira_configure():
+        return False, "Domaine, e-mail et jeton Jira sont nécessaires."
+    domaine = re.sub(r"^https?://", "", config.secret("JIRA_DOMAIN")).strip("/")
+    try:
+        reponse = requests.get(f"https://{domaine}/rest/api/3/myself", timeout=15,
+                               auth=(config.secret("JIRA_EMAIL"), config.secret("JIRA_API_TOKEN")))
+    except requests.RequestException as e:
+        return False, f"Jira injoignable : {type(e).__name__}"
+    if reponse.status_code != 200:
+        return False, f"Jira a répondu HTTP {reponse.status_code} (vérifie l'e-mail et le jeton)."
+    return True, f"Connecté en tant que {reponse.json().get('displayName', '?')}"
+
+
 def tester(profil: config.Profil) -> list:
     """[(élément, ok, message)] : connexion base et groundcover, pour la commande --test."""
     resultats = []
     if profil.base:
         with _environnement(profil):
-            ok, message = db_tools.test_connection(profil.base.schema)
+            if db_tools.is_db_configured():
+                ok, message = db_tools.test_connection(profil.base.schema)
+            else:
+                ok, message = False, "connexion incomplète : renseigne le type, l'hôte, la base et l'utilisateur"
         resultats.append(("Base", ok, mask_secrets(message)[0]))
     if profil.groundcover_filtre:
         maintenant = datetime.now(timezone.utc)
