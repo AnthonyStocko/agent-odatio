@@ -29,6 +29,21 @@ défaut le compte Claude Code déjà connecté sur le poste.
 
 ## Utilisation
 
+### Avec l'IHM (recommandé)
+
+Double-clique sur `lancer.bat` : le navigateur s'ouvre sur http://localhost:8502 après quelques secondes.
+Laisse la fenêtre noire ouverte tant que tu utilises l'agent ; la fermer arrête l'IHM.
+
+Dans la barre latérale, choisis l'application (le profil), puis pose ta question en bas de la page. Pendant
+la recherche, le bandeau « L'agent cherche… » se déplie pour montrer les fichiers lus et les requêtes ; la
+réponse s'affiche ensuite avec son coût. Les questions suivantes gardent le fil de la conversation.
+« Nouvelle conversation » repart de zéro, « Télécharger la conversation » l'enregistre en Markdown, et la
+section Configuration permet de tester les connexions ou de mettre à jour les dépôts.
+
+Le port 8502 est choisi pour ne pas gêner agent-savoye (8501) ; il se change dans `.streamlit/config.toml`.
+
+### En ligne de commande
+
 ```powershell
 venv\Scripts\python.exe agent.py --liste                  # profils disponibles
 venv\Scripts\python.exe agent.py --profil local --test    # vérifie sources, logs, base, groundcover
@@ -36,11 +51,10 @@ venv\Scripts\python.exe agent.py --profil local           # conversation
 venv\Scripts\python.exe agent.py --profil local --question "Que fait le bouton Libérer de l'écran des vagues ?"
 ```
 
-En conversation, le contexte des questions précédentes est conservé ; `/nouveau` repart de zéro, `/quitter`
-termine. Les étapes de l'agent s'affichent en gris (fichiers lus, recherches, requêtes), suivies du coût.
+En conversation, `/nouveau` repart de zéro, `/quitter` termine.
 
-Les dépôts Git d'un profil sont clonés dans `.cache/sources/` au premier lancement, puis mis à jour à chaque
-démarrage (`--sans-maj` pour l'éviter).
+Les dépôts Git d'un profil sont clonés dans `.cache/sources/` à la première question, puis mis à jour à chaque
+démarrage de l'IHM ou de la ligne de commande (`--sans-maj` pour l'éviter en ligne de commande).
 
 ## Un profil
 

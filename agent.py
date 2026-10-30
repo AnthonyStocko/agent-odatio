@@ -15,31 +15,10 @@ import os
 import sys
 
 from odatio_agent import config, outils, sources
+from odatio_agent.etapes import resumer
 from odatio_agent.session import Session
 
 GRIS, GRAS, ROUGE, VERT, FIN = "\033[90m", "\033[1m", "\033[31m", "\033[32m", "\033[0m"
-
-
-def _resume_outil(nom: str, entree: dict, racines: list) -> str:
-    nom_court = nom.rsplit("__", 1)[-1]
-    if nom_court == "Read":
-        chemin = entree.get("file_path", "")
-        for racine in racines:
-            chemin = chemin.replace(str(racine) + os.sep, "")
-        return f"lit {chemin}"
-    if nom_court == "Grep":
-        return f"cherche « {entree.get('pattern', '')} »" + (f" dans {entree['glob']}" if entree.get("glob") else "")
-    if nom_court == "Glob":
-        return f"liste {entree.get('pattern', '')}"
-    if nom_court == "base_requete":
-        return "base : " + " ".join(entree.get("sql", "").split())[:110]
-    if nom_court == "base_decrire":
-        return f"base : décrit {entree.get('table', '')}"
-    if nom_court == "base_tables":
-        return f"base : tables {entree.get('motif', '')}".rstrip()
-    if nom_court == "logs_rechercher":
-        return f"logs : « {entree.get('recherche', '')} » {entree.get('debut', '')} → {entree.get('fin', '')}"
-    return nom_court
 
 
 async def _poser(session: Session, question: str, racines: list) -> None:
@@ -47,7 +26,7 @@ async def _poser(session: Session, question: str, racines: list) -> None:
         print(texte, flush=True)
 
     def sur_outil(nom, entree):
-        print(f"{GRIS}  · {_resume_outil(nom, entree, racines)}{FIN}", flush=True)
+        print(f"{GRIS}  · {resumer(nom, entree, racines)}{FIN}", flush=True)
 
     bilan = await session.demander(question, sur_texte, sur_outil)
     cout = f"{bilan.cout_usd:.3f} $" if bilan.cout_usd is not None else "coût inconnu"
