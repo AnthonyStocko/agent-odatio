@@ -1,0 +1,10 @@
+[server]
+port = 8502          # agent-savoye utilise déjà 8501
+headless = true
+address = "localhost"
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#1D5C8C"

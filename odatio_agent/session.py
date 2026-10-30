@@ -21,6 +21,8 @@ class Bilan:
     tours: int
     erreur: bool
     message: str = ""
+    session_id: str = ""
+    reponse: str = ""      # texte final de la réponse (sans les commentaires intermédiaires)
 
 
 def _texte(texte: str, erreur: bool = False) -> dict:
@@ -29,7 +31,9 @@ def _texte(texte: str, erreur: bool = False) -> dict:
 
 class Session:
     def __init__(self, profil: config.Profil, sources: list, logs: list, reglages: config.Reglages,
-                 utilisateur: str = ""):
+                 utilisateur: str = "", reprise: str = ""):
+        """reprise : identifiant d'une conversation précédente à poursuivre (Bilan.session_id), utilisé par
+        l'IHM qui ouvre une session par question."""
         self.profil, self.reglages = profil, reglages
         self.requetes_base = 0
         racines = [chemin for _, chemin in sources] + list(logs)
@@ -54,6 +58,7 @@ class Session:
             model=reglages.modele or None,
             effort=reglages.effort or None,
             env={"ANTHROPIC_API_KEY": cle_api} if cle_api else {},
+            resume=reprise or None,
         )
         self.client = ClaudeSDKClient(self.options)
 
@@ -133,5 +138,6 @@ class Session:
                         sur_outil(bloc.name, bloc.input)
             elif isinstance(message, ResultMessage):
                 bilan = Bilan(cout_usd=message.total_cost_usd, tours=message.num_turns, erreur=message.is_error,
-                              message="; ".join(message.errors or []) or (message.terminal_reason or ""))
+                              message="; ".join(message.errors or []) or (message.terminal_reason or ""),
+                              session_id=message.session_id or "", reponse=message.result or "")
         return bilan
