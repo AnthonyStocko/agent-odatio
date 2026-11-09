@@ -14,14 +14,14 @@ import pandas as pd
 import streamlit as st
 from dotenv import dotenv_values
 
-from . import comptes_claude, config, outils, sources
+from . import bitbucket, comptes_claude, config, outils, sources
 
 NOUVEAU = "Nouveau projet…"
 TYPES_BASE = ["", "postgresql", "oracle", "sqlserver", "mysql"]
 PILOTES = {"postgresql": (("psycopg2", "psycopg"), "psycopg2-binary"), "oracle": (("oracledb",), "oracledb"),
            "sqlserver": (("pymssql", "pyodbc"), "pymssql"), "mysql": (("pymysql",), "pymysql")}
 COLONNES_SOURCES = ["nom", "chemin", "depot", "branche"]
-REPRISE_SAVOYE = ["JIRA_DOMAIN", "JIRA_EMAIL", "JIRA_API_TOKEN", "BITBUCKET_HTTP_TOKEN", "GROUNDCOVER_API_KEY",
+REPRISE_SAVOYE = ["JIRA_DOMAIN", "JIRA_EMAIL", "JIRA_API_TOKEN", "BITBUCKET_HTTP_TOKEN", "BITBUCKET_URL", "GROUNDCOVER_API_KEY",
                   "GROUNDCOVER_BACKEND_ID", "GROUNDCOVER_API_URL", "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY"]
 MODELES = ["", "sonnet", "opus", "haiku"]
 EFFORTS = ["", "low", "medium", "high", "xhigh", "max"]
@@ -350,10 +350,36 @@ def _onglet_acces() -> None:
         else:
             st.success("Accès Jira enregistrés.")
 
-    with st.form("autres"):
+    with st.form("bitbucket"):
         st.markdown("**Bitbucket**")
-        st.caption("Jeton HTTP en lecture, pour cloner les dépôts Git des projets.")
-        bitbucket = st.text_input("Jeton HTTP Bitbucket", value=config.secret("BITBUCKET_HTTP_TOKEN"), type="password")
+        st.caption("Jeton HTTP en lecture : clone les dépôts des projets et permet à l'agent de lire sur Bitbucket ce "
+                   "qui n'est pas dans les sources (branche d'une tâche pas encore fusionnée, autre dépôt, diff).")
+        bitbucket_jeton = st.text_input("Jeton HTTP Bitbucket", value=config.secret("BITBUCKET_HTTP_TOKEN"),
+                                        type="password",
+                                        help="Bitbucket, Gérer le compte, Jetons d'accès HTTP : droit « Lecture » "
+                                             "sur les dépôts. Un jeton de projet ne voit que son projet.")
+        c1, c2 = st.columns(2)
+        bitbucket_url = c1.text_input("Adresse du serveur", value=config.secret("BITBUCKET_URL"),
+                                      placeholder="https://git.kiscloud.io",
+                                      help="Facultatif : déduite des dépôts des projets si elle est vide.")
+        bitbucket_projets = c2.text_input("Projets autorisés", value=config.secret("BITBUCKET_PROJETS"),
+                                          placeholder="STD, CLIENTX",
+                                          help="Clés de projets Bitbucket que l'agent peut lire ; vide = tous ceux "
+                                               "que le jeton permet de lire.")
+        c1, c2, _ = st.columns([1, 1, 2])
+        bb_enregistrer = c1.form_submit_button("Enregistrer", type="primary", width="stretch")
+        bb_tester = c2.form_submit_button("Enregistrer et tester", width="stretch")
+    if bb_enregistrer or bb_tester:
+        config.enregistrer_secrets({"BITBUCKET_HTTP_TOKEN": bitbucket_jeton, "BITBUCKET_URL": bitbucket_url.strip().rstrip("/"),
+                                    "BITBUCKET_PROJETS": bitbucket_projets})
+        if bb_tester:
+            profil = next((p for p in config.tous_les_profils() if any(s.depot for s in p.sources)), None)
+            ok, message = bitbucket.tester(profil)
+            (st.success if ok else st.error)(f"Bitbucket : {message}")
+        else:
+            st.success("Accès Bitbucket enregistrés.")
+
+    with st.form("groundcover"):
         st.markdown("**groundcover**")
         st.caption("Pour les projets qui ont un filtre groundcover.")
         c1, c2 = st.columns(2)
@@ -362,9 +388,9 @@ def _onglet_acces() -> None:
         gc_url = st.text_input("URL de l'API", value=config.secret("GROUNDCOVER_API_URL"),
                                placeholder="https://api.groundcover.com")
         if st.form_submit_button("Enregistrer", type="primary"):
-            config.enregistrer_secrets({"BITBUCKET_HTTP_TOKEN": bitbucket, "GROUNDCOVER_API_KEY": gc_cle,
-                                        "GROUNDCOVER_BACKEND_ID": gc_backend, "GROUNDCOVER_API_URL": gc_url})
-            st.success("Accès enregistrés.")
+            config.enregistrer_secrets({"GROUNDCOVER_API_KEY": gc_cle, "GROUNDCOVER_BACKEND_ID": gc_backend,
+                                        "GROUNDCOVER_API_URL": gc_url})
+            st.success("Accès groundcover enregistrés.")
 
 
 def page() -> None:

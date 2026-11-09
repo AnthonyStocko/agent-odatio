@@ -18,7 +18,7 @@ import requests
 from tools import db_tools, groundcover_tools, jira_tools
 from tools.secret_tools import mask_secrets, register_secrets
 
-from . import config
+from . import bitbucket, config
 
 config.retirer_secrets_environnement()  # db_tools et jira_tools viennent de charger le .env dans os.environ
 
@@ -166,6 +166,56 @@ def jira_ticket(cle: str, profil: config.Profil | None = None) -> dict:
     return {"cle": cle, "titre": donnees.get("summary", ""), "texte": texte}
 
 
+# ---------------------------------------------------------------------------
+# Bitbucket (lecture seule) : branches, fichiers et diffs hors des sources clonées
+# ---------------------------------------------------------------------------
+
+def _bitbucket(profil: config.Profil | None, outil: str, details: dict, appel) -> str:
+    try:
+        texte = appel()
+    except bitbucket.BitbucketErreur as e:
+        journal(profil, outil, details, str(e))
+        raise OutilErreur(mask_secrets(str(e))[0])
+    except Exception as e:  # réponse inattendue du serveur
+        message = mask_secrets(f"{type(e).__name__} : {e}")[0]
+        journal(profil, outil, details, message)
+        raise OutilErreur(message)
+    journal(profil, outil, details)
+    return texte
+
+
+def bitbucket_depots(profil, recherche: str = "", projet: str = "") -> str:
+    return _bitbucket(profil, "bitbucket_depots", {"recherche": recherche[:100], "projet": projet},
+                      lambda: bitbucket.depots(profil, recherche, projet))
+
+
+def bitbucket_branches(profil, filtre: str = "", depot: str = "", projet: str = "") -> str:
+    return _bitbucket(profil, "bitbucket_branches", {"filtre": filtre[:100], "depot": depot, "projet": projet},
+                      lambda: bitbucket.branches(profil, filtre, depot, projet))
+
+
+def bitbucket_fichiers(profil, depot: str, branche: str = "", dossier: str = "", motif: str = "") -> str:
+    return _bitbucket(profil, "bitbucket_fichiers", {"depot": depot, "branche": branche, "dossier": dossier},
+                      lambda: bitbucket.fichiers(profil, depot, branche, dossier, motif))
+
+
+def bitbucket_lire(profil, depot: str, chemin: str, branche: str = "", debut: int = 1,
+                   nombre: int = bitbucket.LIGNES_MAX) -> str:
+    return _bitbucket(profil, "bitbucket_lire", {"depot": depot, "branche": branche, "fichier": chemin},
+                      lambda: bitbucket.lire(profil, depot, chemin, branche, debut, nombre))
+
+
+def bitbucket_comparer(profil, depot: str, branche: str, vers: str = "", fichier: str = "") -> str:
+    return _bitbucket(profil, "bitbucket_comparer", {"depot": depot, "branche": branche, "vers": vers,
+                                                     "fichier": fichier},
+                      lambda: bitbucket.comparer(profil, depot, branche, vers, fichier))
+
+
+def bitbucket_chercher(profil, texte: str, depot: str = "", projet: str = "") -> str:
+    return _bitbucket(profil, "bitbucket_chercher", {"recherche": texte[:100], "depot": depot, "projet": projet},
+                      lambda: bitbucket.chercher(profil, texte, depot, projet))
+
+
 def tester_jira() -> tuple:
     """(ok, message) : identifiants Jira valides ?"""
     if not config.jira_configure():
@@ -199,4 +249,7 @@ def tester(profil: config.Profil) -> list:
             resultats.append(("groundcover", True, "Connexion OK"))
         except OutilErreur as e:
             resultats.append(("groundcover", False, str(e)))
+    if bitbucket.configure(profil):
+        ok, message = bitbucket.tester(profil)
+        resultats.append(("Bitbucket", ok, mask_secrets(message)[0]))
     return resultats

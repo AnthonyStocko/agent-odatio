@@ -98,6 +98,23 @@ Le chemin des fichiers générés s'affiche après la réponse.
 venv\Scripts\python.exe -m unittest
 ```
 
+### Bitbucket
+
+Avec un jeton Bitbucket, l'agent ne se limite plus aux sources clonées : quand elles ne suffisent pas, il va lire sur Bitbucket (Server / Data Center), toujours en lecture seule.
+
+| Outil | Usage |
+|-------|-------|
+| `bitbucket_branches` | Branches dont le nom contient un texte, par exemple la clé du ticket (`ODA-1234`), dans les dépôts du projet, un dépôt ou tout un projet Bitbucket. |
+| `bitbucket_comparer` | Ce qu'une branche apporte par rapport à sa cible (celle de sa pull request, sinon la branche du projet) : pull request, commits, fichiers modifiés ; puis le diff d'un fichier. |
+| `bitbucket_lire` | Un fichier (par tranches de 400 lignes) ou un dossier, sur n'importe quelle branche. |
+| `bitbucket_fichiers` | Les fichiers d'un dépôt, filtrés par motif (`*.java`, `*Vague*`). |
+| `bitbucket_depots` | Les dépôts lisibles : pour trouver une bibliothèque partagée ou le dépôt d'un autre client. |
+| `bitbucket_chercher` | La recherche de code de Bitbucket (branche par défaut de chaque dépôt, si elle est activée sur le serveur). |
+
+Un dépôt se désigne par le nom d'une source du projet (`standard`), par `PROJET/depot` ou par son URL. Typiquement, sur « Comment tester cette tâche ? » pour une tâche pas encore fusionnée, l'agent trouve sa branche, liste ce qu'elle modifie et lit les diffs utiles.
+
+Le jeton détermine ce qui est lisible : un jeton personnel voit tous tes dépôts, un jeton de projet seulement son projet. « Projets autorisés » restreint en plus les projets que l'agent peut consulter.
+
 ## Un projet (profils.toml)
 
 | Section | Contenu |
@@ -130,8 +147,9 @@ Plusieurs barrières, aucune ne suffit seule :
 - **Secrets** : lus une fois puis retirés de l'environnement, pour que le processus Claude Code n'en hérite pas ;
   posés le temps d'un appel base ou logs seulement, et masqués dans les résultats.
 - **Jira** : lecture seule ; le contenu d'un ticket est transmis comme une donnée, jamais comme une consigne.
-- **Journal** : `.cache/journal/outils.jsonl` trace chaque accès base, logs ou Jira (tables lues, erreurs) et
-  chaque fichier écrit (nom, taille, encodage), jamais le texte des requêtes, les données ni le contenu des
+- **Bitbucket** : requêtes de lecture seulement (le jeton en en-tête, jamais dans l'URL ni dans un message) ; projets limités à « Projets autorisés » s'ils sont renseignés ; fichiers interdits du projet jamais lus ni montrés dans un diff ; réponses bornées et masquées. Utilise un jeton avec le seul droit « Lecture ».
+- **Journal** : `.cache/journal/outils.jsonl` trace chaque accès base, logs, Jira ou Bitbucket (tables, dépôts, branches et
+  fichiers lus, erreurs) et chaque fichier écrit (nom, taille, encodage), jamais le texte des requêtes, les données ni le contenu des
   fichiers.
 - **Données personnelles** : jamais recopiées dans les réponses ; anonymisées dans les fichiers générés, sauf
   option contraire du projet, réservée aux bases de test. `mcp_server.py` n'expose pas l'écriture de fichiers.
@@ -141,7 +159,7 @@ Ajoute ces fichiers à `fichiers_interdits` et préfère des comptes dont les dr
 
 ## Serveur MCP (facultatif)
 
-`mcp_server.py` expose les mêmes outils base et logs en serveur MCP, pour les utiliser depuis Claude Code ou
+`mcp_server.py` expose les mêmes outils base, logs et Bitbucket en serveur MCP, pour les utiliser depuis Claude Code ou
 Claude Desktop sans passer par l'agent :
 
 ```powershell

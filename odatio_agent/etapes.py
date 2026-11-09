@@ -25,4 +25,20 @@ def resumer(nom: str, entree: dict, racines: list) -> str:
         return f"Prépare un fichier d'interface : {entree.get('objet', '')}".rstrip(" :")
     if nom_court == "fichier_ecrire":
         return f"Écrit le fichier {entree.get('nom', '')}"
+    if nom_court.startswith("bitbucket_"):
+        depot = entree.get("depot", "") or entree.get("projet", "")
+        branche = f" @ {entree['branche']}" if entree.get("branche") else ""
+        if nom_court == "bitbucket_lire":
+            return f"Bitbucket : lit {depot}{branche} {entree.get('chemin', '')}"
+        if nom_court == "bitbucket_comparer":
+            cible = f" vers {entree['vers']}" if entree.get("vers") else ""
+            fichier = f" ({entree['fichier']})" if entree.get("fichier") else ""
+            return f"Bitbucket : compare {depot} {entree.get('branche', '')}{cible}{fichier}"
+        if nom_court == "bitbucket_branches":
+            return f"Bitbucket : branches « {entree.get('filtre', '')} » {depot}".rstrip()
+        if nom_court == "bitbucket_chercher":
+            return f"Bitbucket : cherche « {entree.get('texte', '')} » {depot}".rstrip()
+        if nom_court == "bitbucket_fichiers":
+            return f"Bitbucket : liste {depot}{branche} {entree.get('dossier', '')} {entree.get('motif', '')}".rstrip()
+        return f"Bitbucket : dépôts « {entree.get('recherche', '')} » {entree.get('projet', '')}".rstrip()
     return nom_court
