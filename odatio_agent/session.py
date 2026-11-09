@@ -1,14 +1,18 @@
 """
 Session de conversation avec l'agent (Claude Agent SDK) : outils de fichiers limités à Read, Grep et Glob,
-outils maison base et logs exposés en serveur MCP dans le processus (create_sdk_mcp_server), garde-fou sur
-les chemins, aucun réglage utilisateur de Claude Code chargé.
+outils maison base, logs et fichiers d'interface exposés en serveur MCP dans le processus
+(create_sdk_mcp_server), garde-fou sur les chemins, aucun réglage utilisateur de Claude Code chargé.
+
+La seule écriture possible est fichier_ecrire, dans le dossier des fichiers générés du profil, après
+generation_demarrer : cet appel annonce une génération demandée par l'utilisateur et porte le plafond d'accès
+base de la question à reglages.requetes_base_generation.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher, ResultMessage,
                               TextBlock, ToolUseBlock, create_sdk_mcp_server, tool)
 
-from . import config, consignes, outils
+from . import config, consignes, fichiers, outils
 from .garde import creer_garde
 
 SERVEUR = "odatio"
@@ -23,6 +27,7 @@ class Bilan:
     message: str = ""
     session_id: str = ""
     reponse: str = ""      # texte final de la réponse (sans les commentaires intermédiaires)
+    fichiers: list = field(default_factory=list)  # fichiers écrits pendant la question (fichiers.ecrire)
 
 
 def _texte(texte: str, erreur: bool = False) -> dict:
@@ -36,8 +41,10 @@ class Session:
         l'IHM qui ouvre une session par question. ticket : tâche Jira à tester (outils.jira_ticket), donnée
         à l'agent comme contexte."""
         self.profil, self.reglages = profil, reglages
-        self.requetes_base = 0
+        self.requetes_base, self.generation, self.fichiers = 0, False, []
         racines = [chemin for _, chemin in sources] + list(logs)
+        sortie = config.dossier_fichiers(profil)
+        sortie.mkdir(parents=True, exist_ok=True)
         outils_maison = self._outils_maison()
         noms_maison = [f"mcp__{SERVEUR}__{t.name}" for t in outils_maison]
 
@@ -50,9 +57,9 @@ class Session:
             strict_mcp_config=True,                       # ignore les serveurs MCP configurés sur le poste
             setting_sources=[],                           # ignore les réglages et CLAUDE.md du poste
             cwd=str(racines[0]),
-            add_dirs=[str(r) for r in racines[1:]],
+            add_dirs=[str(r) for r in racines[1:]] + [str(sortie)],
             hooks={"PreToolUse": [HookMatcher(matcher="Read|Grep|Glob",
-                                              hooks=[creer_garde(racines, profil.fichiers_interdits)])]},
+                                              hooks=[creer_garde(racines, profil.fichiers_interdits, sortie)])]},
             max_turns=reglages.max_tours or None,
             max_budget_usd=reglages.budget_usd or None,
             model=reglages.modele or None,
@@ -64,13 +71,16 @@ class Session:
 
     # -- Outils maison ------------------------------------------------------------------------------
 
+    def plafond_base(self) -> int:
+        return self.reglages.requetes_base_generation if self.generation else self.reglages.requetes_base
+
     def _outils_maison(self) -> list:
         profil, liste = self.profil, []
 
         async def executer(fonction, *args, base=False) -> dict:
             if base:
-                if self.requetes_base >= self.reglages.requetes_base:
-                    return _texte(f"Limite de {self.reglages.requetes_base} accès base atteinte pour cette "
+                if self.requetes_base >= self.plafond_base():
+                    return _texte(f"Limite de {self.plafond_base()} accès base atteinte pour cette "
                                   f"question : réponds avec ce que tu as.", True)
                 self.requetes_base += 1
             try:
@@ -126,7 +136,55 @@ class Session:
                     return _texte(f"ERREUR : {e}", True)
 
             liste.append(jira_ticket)
+
+        liste += self._outils_fichiers()
         return liste
+
+    def _outils_fichiers(self) -> list:
+        profil = self.profil
+
+        @tool("generation_demarrer", "À appeler UNE fois, avant toute recherche, quand l'utilisateur demande "
+              "explicitement de créer un fichier d'interface (commande, article…) à intégrer. Porte le plafond "
+              "d'accès base de la question au niveau d'une génération. Jamais pour une simple question.",
+              {"type": "object", "properties": {"objet": {"type": "string",
+                                                          "description": "ex. commande 0082380800"}},
+               "required": ["objet"]})
+        async def generation_demarrer(args):
+            self.generation = True
+            outils.journal(profil, "generation_demarrer", {"objet": str(args.get("objet", ""))[:200]})
+            return _texte(f"Génération ouverte : jusqu'à {self.plafond_base()} accès base pour cette question "
+                          f"({self.requetes_base} déjà utilisé(s)).")
+
+        @tool("fichier_ecrire", "Écrit un fichier d'interface demandé par l'utilisateur dans le dossier des "
+              "fichiers générés (seule écriture possible ; jamais d'écrasement : un suffixe horodaté est ajouté "
+              "si le nom existe). Nom simple sans chemin, extension "
+              + ", ".join(fichiers.EXTENSIONS) + ", 5 Mo au plus. Appelle d'abord generation_demarrer.",
+              {"type": "object", "properties": {
+                  "nom": {"type": "string", "description": "ex. CDE_0082380800_T1.xml"},
+                  "contenu": {"type": "string"},
+                  "encodage": {"type": "string", "enum": list(fichiers.ENCODAGES), "default": "utf-8"},
+                  "fins_ligne": {"type": "string", "enum": list(fichiers.FINS_LIGNE), "default": "lf"}},
+               "required": ["nom", "contenu"]})
+        async def fichier_ecrire(args):
+            if not self.generation:
+                return _texte("Appelle d'abord generation_demarrer : l'écriture n'est permise que pour un "
+                              "fichier d'interface demandé par l'utilisateur.", True)
+            try:
+                f = fichiers.ecrire(profil, args["nom"], args["contenu"], args.get("encodage") or "utf-8",
+                                    args.get("fins_ligne") or "lf")
+            except outils.OutilErreur as e:
+                return _texte(f"ERREUR : {e}", True)
+            self.fichiers.append(f)
+            notes = [f"Fichier écrit : {f['chemin']} ({f['taille']} octets, {f['encodage']}, fins de ligne "
+                     f"{f['fins_ligne'].upper()})."]
+            if f["renomme"]:
+                notes.append(f"Le nom demandé existait déjà : le fichier s'appelle {f['nom']}.")
+            if f["secrets_masques"]:
+                notes.append(f"{f['secrets_masques']} valeur(s) secrète(s) remplacée(s) par **** : signale-le.")
+            notes.append("Relis-le avec Read pour le vérifier.")
+            return _texte(" ".join(notes))
+
+        return [generation_demarrer, fichier_ecrire]
 
     # -- Conversation -------------------------------------------------------------------------------
 
@@ -139,7 +197,7 @@ class Session:
     async def demander(self, question: str, sur_texte, sur_outil) -> Bilan:
         """Pose une question (le contexte des questions précédentes est conservé) ; diffuse le texte de la
         réponse et les outils utilisés au fil de l'eau."""
-        self.requetes_base = 0
+        self.requetes_base, self.generation, self.fichiers = 0, False, []
         await self.client.query(question)
         bilan = Bilan(cout_usd=None, tours=0, erreur=False)
         async for message in self.client.receive_response():
@@ -153,4 +211,5 @@ class Session:
                 bilan = Bilan(cout_usd=message.total_cost_usd, tours=message.num_turns, erreur=message.is_error,
                               message="; ".join(message.errors or []) or (message.terminal_reason or ""),
                               session_id=message.session_id or "", reponse=message.result or "")
+        bilan.fichiers = list(self.fichiers)
         return bilan

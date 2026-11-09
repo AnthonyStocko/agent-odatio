@@ -30,6 +30,8 @@ async def _poser(session: Session, question: str, racines: list) -> None:
         print(f"{GRIS}  · {resumer(nom, entree, racines)}{FIN}", flush=True)
 
     bilan = await session.demander(question, sur_texte, sur_outil)
+    for f in bilan.fichiers:
+        print(f"{VERT}Fichier généré :{FIN} {f['chemin']} ({f['taille']} octets)")
     cout = f"{bilan.cout_usd:.3f} $" if bilan.cout_usd is not None else "coût inconnu"
     etat = f"{ROUGE}interrompu : {bilan.message}{FIN} — " if bilan.erreur else ""
     print(f"{GRIS}— {etat}{bilan.tours} étape(s), {cout}{FIN}\n")
@@ -81,6 +83,9 @@ def tester(profil: config.Profil, maj: bool) -> int:
         ok_global = False
     for dossier in sources.dossiers_logs(profil):
         print(f"{VERT}✔{FIN} Logs : {dossier}")
+    erreur = config.erreur_dossier_fichiers(profil)
+    print(f"{ROUGE + '✘' if erreur else VERT + '✔'}{FIN} Fichiers générés : {erreur or config.dossier_fichiers(profil)}")
+    ok_global &= not erreur
     for element, ok, message in outils.tester(profil):
         print(f"{VERT + '✔' if ok else ROUGE + '✘'}{FIN} {element} : {message}")
         ok_global &= ok
@@ -93,7 +98,8 @@ def main() -> int:
     if os.name == "nt":
         os.system("")  # active les couleurs ANSI dans la console Windows
 
-    parser = argparse.ArgumentParser(description="Agent fonctionnel Odatio (lecture seule)")
+    parser = argparse.ArgumentParser(description="Agent fonctionnel Odatio (lecture seule, sauf les fichiers "
+                                                 "d'interface demandés)")
     parser.add_argument("--profil", help="profil de profils.toml")
     parser.add_argument("--question", default="", help="pose une seule question puis termine")
     parser.add_argument("--test", action="store_true", help="vérifie la configuration du profil")

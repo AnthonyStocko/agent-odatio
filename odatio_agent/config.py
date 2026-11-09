@@ -4,7 +4,9 @@ Configuration de l'agent : profils d'environnement (profils.toml) et secrets (.e
 Un profil décrit une application Odatio à interroger (ton poste, une recette client…) :
 - ses sources : dossiers locaux et/ou dépôts Git (clonés dans .cache/sources) ;
 - ses logs : dossiers locaux ou partagés (lus avec Read/Grep) et/ou un filtre groundcover ;
-- sa base : connexion en lecture seule (le mot de passe reste dans le .env, désigné par mot_de_passe_env).
+- sa base : connexion en lecture seule (le mot de passe reste dans le .env, désigné par mot_de_passe_env) ;
+- ses fichiers générés : dossier où l'agent écrit les fichiers d'interface demandés (.cache/fichiers/<profil>
+  par défaut), et le choix d'y garder ou non les données réelles.
 
 Les secrets sont lus une fois, gardés en mémoire, puis retirés de os.environ : le processus Claude Code
 lancé par le SDK n'hérite ainsi d'aucun mot de passe ni jeton.
@@ -63,6 +65,8 @@ class Profil:
     groundcover_filtre: str = ""
     base: Base | None = None
     fichiers_interdits: list = field(default_factory=list)
+    dossier_fichiers: str = ""     # fichiers d'interface générés ; vide = .cache/fichiers/<profil>
+    donnees_reelles: bool = False  # garder noms, adresses… dans les fichiers générés (base de test seulement)
 
 
 @dataclass
@@ -72,6 +76,7 @@ class Reglages:
     max_tours: int = 40       # outils appelés au plus par question
     budget_usd: float = 0.0   # plafond de coût par question (0 = aucun)
     requetes_base: int = 15   # requêtes base au plus par question
+    requetes_base_generation: int = 40  # requêtes base au plus pour une question qui génère un fichier
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +171,8 @@ def reglages() -> Reglages:
     brut = _lire_toml().get("agent", {})
     return Reglages(modele=str(brut.get("modele", "")).strip(), effort=str(brut.get("effort", "")).strip(),
                     max_tours=int(brut.get("max_tours", 40)), budget_usd=float(brut.get("budget_usd", 0)),
-                    requetes_base=int(brut.get("requetes_base", 15)))
+                    requetes_base=int(brut.get("requetes_base", 15)),
+                    requetes_base_generation=int(brut.get("requetes_base_generation", 40)))
 
 
 def noms_profils() -> list:
@@ -202,7 +208,7 @@ def _profil(nom: str, brut: dict, interdits_par_defaut: bool) -> Profil:
     if not sources:
         raise ConfigError(f"Profil « {nom} » : au moins une source (chemin ou depot) est nécessaire.")
 
-    logs = brut.get("logs", {})
+    logs, fichiers = brut.get("logs", {}), brut.get("fichiers", {})
     base = None
     if "base" in brut:
         b = brut["base"]
@@ -218,7 +224,40 @@ def _profil(nom: str, brut: dict, interdits_par_defaut: bool) -> Profil:
                   dossiers_logs=[str(d) for d in logs.get("dossiers", [])],
                   groundcover_filtre=str(logs.get("groundcover_filtre", "")).strip(), base=base,
                   fichiers_interdits=(INTERDITS_PAR_DEFAUT if interdits_par_defaut else [])
-                  + [str(m) for m in brut.get("fichiers_interdits", [])])
+                  + [str(m) for m in brut.get("fichiers_interdits", [])],
+                  dossier_fichiers=str(fichiers.get("dossier", "")).strip(),
+                  donnees_reelles=bool(fichiers.get("donnees_reelles", False)))
+
+
+def dossier_fichiers(profil: Profil) -> Path:
+    """Dossier où l'agent écrit les fichiers d'interface de ce profil (chemin absolu, pas forcément créé)."""
+    if profil.dossier_fichiers:
+        return Path(profil.dossier_fichiers).expanduser().resolve()
+    return (CACHE / "fichiers" / profil.nom).resolve()
+
+
+def _dans(chemin: Path, dossier: Path) -> bool:
+    """chemin est-il dossier ou un de ses sous-dossiers ? (insensible à la casse sous Windows)"""
+    a, b = os.path.normcase(str(chemin)), os.path.normcase(str(dossier))
+    return a == b or a.startswith(b.rstrip(os.sep) + os.sep)
+
+
+def erreur_dossier_fichiers(profil: Profil) -> str:
+    """Message si le dossier des fichiers générés est mal placé, sinon '' : il ne doit être ni sous une source
+    ou un dossier de logs (l'application pourrait le surveiller, l'agent écrirait dans le code), ni les
+    contenir, ni contenir le dossier de l'agent (.env, profils.toml)."""
+    sortie = dossier_fichiers(profil)
+    interdits = [(f"la source « {s.nom} »", Path(s.chemin).expanduser().resolve() if s.chemin
+                  else (CACHE / "sources" / profil.nom / s.nom).resolve()) for s in profil.sources]
+    interdits += [(f"le dossier de logs {d}", Path(d).expanduser().resolve()) for d in profil.dossiers_logs]
+    for libelle, dossier in interdits:
+        if _dans(sortie, dossier) or _dans(dossier, sortie):
+            return (f"le dossier des fichiers générés ({sortie}) ne doit pas être dans {libelle} ni la contenir : "
+                    f"choisis un dossier à part, que l'application ne surveille pas.")
+    if _dans(RACINE, sortie) or (_dans(sortie, RACINE) and not _dans(sortie, CACHE / "fichiers")):
+        return (f"le dossier des fichiers générés ({sortie}) ne doit pas être dans le dossier de l'agent "
+                f"(sauf .cache/fichiers) ni le contenir.")
+    return ""
 
 
 NOM_PROFIL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$")
@@ -236,6 +275,10 @@ def enregistrer(reglages_agent: Reglages, profils: list) -> None:
             raise ConfigError(f"Profil « {p.nom} » : au moins une source est nécessaire.")
     if len({p.nom for p in profils}) != len(profils):
         raise ConfigError("Deux profils portent le même nom.")
+    for p in profils:
+        erreur = erreur_dossier_fichiers(p)
+        if erreur:
+            raise ConfigError(f"Profil « {p.nom} » : {erreur}")
 
     donnees = {"agent": {k: v for k, v in asdict(reglages_agent).items()}, "profils": {}}
     for p in profils:
@@ -252,6 +295,8 @@ def enregistrer(reglages_agent: Reglages, profils: list) -> None:
             brut["logs"] = logs
         if p.base:
             brut["base"] = {k: v for k, v in asdict(p.base).items() if v}
+        if p.dossier_fichiers or p.donnees_reelles:
+            brut["fichiers"] = {"dossier": p.dossier_fichiers, "donnees_reelles": p.donnees_reelles}
         donnees["profils"][p.nom] = brut
 
     if FICHIER_PROFILS.exists():

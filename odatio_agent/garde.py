@@ -1,8 +1,10 @@
 """
 Garde-fou des outils de fichiers (hook PreToolUse du SDK, appelé avant CHAQUE utilisation d'un outil) :
 Read, Grep et Glob ne peuvent viser que les sources et les dossiers de logs du profil, et Read refuse les
-fichiers de secrets (.env, clés, keystores…). Tout autre outil intégré est déjà exclu par la configuration de
-la session (seuls Read, Grep et Glob sont chargés) ; les outils maison (base, logs) ont leurs propres garde-fous.
+fichiers de secrets (.env, clés, keystores…). Le dossier des fichiers générés est lisible par Read seulement,
+et pour les seuls fichiers placés directement dedans (l'agent relit ce qu'il a écrit). Tout autre outil intégré
+est déjà exclu par la configuration de la session (seuls Read, Grep et Glob sont chargés) ; les outils maison
+(base, logs, fichier_ecrire) ont leurs propres garde-fous.
 """
 import os
 from fnmatch import fnmatch
@@ -13,13 +15,17 @@ def _normaliser(chemin) -> str:
     return os.path.normcase(os.path.realpath(chemin))
 
 
-def creer_garde(racines: list, interdits: list):
+def creer_garde(racines: list, interdits: list, dossier_sortie=None):
     racines_norm = [_normaliser(r) for r in racines]
+    sortie_norm = _normaliser(dossier_sortie) if dossier_sortie else None
     motifs = [m.lower() for m in interdits]
 
     def dans_racines(chemin: str) -> bool:
         cible = _normaliser(chemin)
         return any(cible == r or cible.startswith(r.rstrip(os.sep) + os.sep) for r in racines_norm)
+
+    def dans_sortie(chemin: str) -> bool:
+        return sortie_norm is not None and os.path.dirname(_normaliser(chemin)) == sortie_norm
 
     def interdit(chemin: str) -> bool:
         nom = Path(chemin).name.lower()
@@ -46,7 +52,7 @@ def creer_garde(racines: list, interdits: list):
         if not os.path.isabs(chemin):
             chemin = os.path.join(base, chemin)
 
-        if not dans_racines(chemin):
+        if not dans_racines(chemin) and not (outil == "Read" and dans_sortie(chemin)):
             return refus(f"Accès refusé : {chemin} est hors des sources et des logs autorisés.")
         if interdit(chemin):
             return refus("Accès refusé : fichier de secrets (mots de passe, clés). Ne cherche pas à le lire.")

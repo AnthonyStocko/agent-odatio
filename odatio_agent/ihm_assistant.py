@@ -1,5 +1,6 @@
 """
-Page « Assistant » de l'IHM : choix du projet, tâche Jira à tester (facultative), conversation avec l'agent.
+Page « Assistant » de l'IHM : choix du projet, tâche Jira à tester (facultative), conversation avec l'agent,
+fichiers d'interface générés (téléchargement et chemin, pour les intégrer depuis l'écran de l'application).
 
 Chaque question ouvre une session de l'agent qui reprend la conversation précédente (resume) : rien ne reste
 en mémoire entre deux questions, ce qui convient au fonctionnement de Streamlit (le script est rejoué à chaque
@@ -8,6 +9,7 @@ interaction).
 import asyncio
 import getpass
 from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
 
@@ -18,11 +20,12 @@ from .session import Session
 QUESTION_TACHE = ("Explique-moi ce que change cette tâche dans l'application, puis comment la tester : écrans et "
                   "traitements concernés, paramétrage et données à préparer, cas à jouer (nominaux et limites) et ce "
                   "qu'il faut vérifier pour conclure.")
+TYPES_MIME = {".xml": "application/xml", ".csv": "text/csv", ".json": "application/json"}
 
 
 def _etat():
     etat = st.session_state
-    etat.setdefault("messages", [])       # [{"role", "texte", "etapes", "bilan"}]
+    etat.setdefault("messages", [])       # [{"role", "texte", "etapes", "bilan", "fichiers"}]
     etat.setdefault("reprise", "")        # identifiant de la conversation en cours côté agent
     etat.setdefault("profil_actif", "")
     etat.setdefault("preparation", {})    # profil -> (sources prêtes, dossiers de logs)
@@ -50,7 +53,28 @@ def _en_markdown(profil: str) -> str:
         lignes += [f"Tâche : {etat.ticket['cle']} — {etat.ticket['titre']}", ""]
     for m in etat.messages:
         lignes += [f"## {m['texte']}" if m["role"] == "user" else m["texte"], ""]
+        lignes += [f"- Fichier généré : `{f['chemin']}` ({_taille(f['taille'])})" for f in m.get("fichiers") or []]
     return "\n".join(lignes)
+
+
+def _taille(octets: int) -> str:
+    return f"{octets} octets" if octets < 1024 else f"{octets / 1024:.1f} ko"
+
+
+def _afficher_fichiers(fichiers: list, cle: str) -> None:
+    """Fichiers générés pendant une question : nom, taille, téléchargement et chemin complet."""
+    for i, f in enumerate(fichiers):
+        chemin = Path(f["chemin"])
+        with st.container(border=True):
+            c1, c2 = st.columns([3, 1])
+            c1.markdown(f":material/description: **{f['nom']}** — {_taille(f['taille'])}, {f['encodage']}, "
+                        f"{f['fins_ligne'].upper()}")
+            if chemin.is_file():
+                c2.download_button("Télécharger", chemin.read_bytes(), file_name=f["nom"], key=f"{cle}-{i}",
+                                   mime=TYPES_MIME.get(chemin.suffix.lower(), "text/plain"), width="stretch")
+            else:
+                c2.caption("Fichier supprimé")
+            st.code(str(chemin), language=None)
 
 
 async def _repondre(profil, prets, logs, question, sur_texte, sur_outil):
@@ -137,7 +161,8 @@ def page(page_configuration) -> None:
         return
 
     contexte = f" sur la tâche {etat.ticket['cle']}" if etat.ticket else ""
-    st.caption(f"Projet « {profil.nom} »{contexte}. L'agent lit les sources, la base et les logs, sans rien modifier.")
+    st.caption(f"Projet « {profil.nom} »{contexte}. L'agent lit les sources, la base et les logs, sans rien modifier ; "
+               f"il n'écrit que les fichiers d'interface que tu lui demandes, dans {config.dossier_fichiers(profil)}.")
 
     question_auto = None
     if not etat.messages:
@@ -151,9 +176,11 @@ def page(page_configuration) -> None:
                         "libellé exact, un message d'erreur ou une référence : l'agent trouvera plus vite. Pour "
                         "préparer un test, charge d'abord la tâche Jira dans la barre latérale.")
 
-    for m in etat.messages:
+    for n, m in enumerate(etat.messages):
         with st.chat_message(m["role"]):
             st.markdown(m["texte"])
+            if m.get("fichiers"):
+                _afficher_fichiers(m["fichiers"], f"fichier-{n}")
             if m.get("etapes"):
                 with st.expander(f"{len(m['etapes'])} étape(s) consultée(s)"):
                     st.markdown("\n".join(f"- {e}" for e in m["etapes"]))
@@ -199,10 +226,13 @@ def page(page_configuration) -> None:
 
         reponse = bilan.reponse or "\n\n".join(textes) or "_Pas de réponse._"
         zone.markdown(reponse)
+        if bilan.fichiers:
+            _afficher_fichiers(bilan.fichiers, f"fichier-{len(etat.messages)}")
         statut.update(label=f"{len(etapes)} étape(s) consultée(s)", state="error" if bilan.erreur else "complete")
         cout = f"{bilan.cout_usd:.3f} $" if bilan.cout_usd is not None else "coût inconnu"
         resume_bilan = (f"Interrompu : {bilan.message}, " if bilan.erreur else "") + cout
         st.caption(resume_bilan)
 
     etat.reprise = bilan.session_id or etat.reprise
-    etat.messages.append({"role": "assistant", "texte": reponse, "etapes": etapes, "bilan": resume_bilan})
+    etat.messages.append({"role": "assistant", "texte": reponse, "etapes": etapes, "bilan": resume_bilan,
+                          "fichiers": bilan.fichiers})

@@ -21,4 +21,8 @@ def resumer(nom: str, entree: dict, racines: list) -> str:
         return f"Base : liste les tables {entree.get('motif', '')}".rstrip()
     if nom_court == "logs_rechercher":
         return f"Logs : « {entree.get('recherche', '')} » de {entree.get('debut', '')} à {entree.get('fin', '')}"
+    if nom_court == "generation_demarrer":
+        return f"Prépare un fichier d'interface : {entree.get('objet', '')}".rstrip(" :")
+    if nom_court == "fichier_ecrire":
+        return f"Écrit le fichier {entree.get('nom', '')}"
     return nom_court

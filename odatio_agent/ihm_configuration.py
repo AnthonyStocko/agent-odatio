@@ -1,6 +1,7 @@
 """
 Page « Configuration » de l'IHM :
-- Projets : les applications Odatio sur lesquelles tu travailles (sources, logs, base), écrites dans profils.toml ;
+- Projets : les applications Odatio sur lesquelles tu travailles (sources, logs, base, dossier des fichiers
+  générés), écrites dans profils.toml ;
 - Claude : compte utilisé (abonnement connecté ou clé API), modèle, effort et plafonds ;
 - Accès : Jira, Bitbucket et groundcover, avec reprise possible des réglages d'agent-savoye.
 Mots de passe, jetons et clés vont dans le .env, jamais dans profils.toml.
@@ -114,6 +115,20 @@ def _onglet_projets() -> None:
                                  help="Un motif par ligne, en plus des .env, clés et keystores toujours refusés. "
                                       "Ajoute les fichiers de configuration qui contiennent des mots de passe.")
 
+        st.markdown("**Fichiers générés**")
+        dossier_fichiers = st.text_input(
+            "Dossier des fichiers générés", value=p.dossier_fichiers,
+            placeholder=str(config.CACHE / "fichiers" / (p.nom or "<projet>")),
+            help="Seul dossier où l'agent peut écrire : les fichiers d'interface que tu lui demandes (commande, "
+                 "article…), que tu intègres ensuite toi-même depuis l'écran de l'application. Vide = dossier "
+                 "par défaut. Il ne doit être ni dans une source ni dans un dossier de logs, et surtout pas un "
+                 "dossier surveillé par l'application (dossier d'entrée d'une intégration automatique) : "
+                 "l'intégration doit rester un geste manuel.")
+        donnees_reelles = st.checkbox(
+            "Garder les données réelles dans les fichiers générés", value=p.donnees_reelles,
+            help="Décoché : noms, adresses, e-mails et téléphones de personnes sont remplacés par des valeurs "
+                 "fictives (les codes client, article, site… sont gardés). À cocher seulement sur une base de test.")
+
         c1, c2, _ = st.columns([1, 1, 2])
         enregistrer = c1.form_submit_button("Enregistrer", type="primary", width="stretch")
         tester = c2.form_submit_button("Enregistrer et tester", width="stretch")
@@ -145,6 +160,13 @@ def _onglet_projets() -> None:
                 st.error(e)
             return
 
+        erreur = config.erreur_dossier_fichiers(config.Profil(
+            nom=nom, sources=liste_sources, dossiers_logs=_lignes(dossiers_logs),
+            dossier_fichiers=dossier_fichiers.strip()))
+        if erreur:
+            st.error(erreur[0].upper() + erreur[1:])
+            return
+
         nouvelle_base = None
         if type_base:
             variable = config.nom_mot_de_passe(nom)
@@ -157,7 +179,8 @@ def _onglet_projets() -> None:
                                         utilisateur=utilisateur.strip(), schema=schema.strip(), mot_de_passe_env=variable)
         nouveau = config.Profil(nom=nom, description=description.strip(), sources=liste_sources,
                                 dossiers_logs=_lignes(dossiers_logs), groundcover_filtre=groundcover.strip(),
-                                base=nouvelle_base, fichiers_interdits=_lignes(interdits))
+                                base=nouvelle_base, fichiers_interdits=_lignes(interdits),
+                                dossier_fichiers=dossier_fichiers.strip(), donnees_reelles=donnees_reelles)
         liste = [nouveau if x.nom == choix else x for x in profils] if existant else profils + [nouveau]
         try:
             config.enregistrer(config.reglages(), liste)
@@ -183,6 +206,7 @@ def _onglet_projets() -> None:
                 for d in profil.dossiers_logs:
                     ok = Path(d).expanduser().is_dir()
                     resultats.append(("Logs", ok, f"{d} {'trouvé' if ok else 'introuvable'}"))
+                resultats.append(("Fichiers générés", True, str(config.dossier_fichiers(profil))))
                 resultats += outils.tester(profil)
         etat.resultats_test = resultats
         st.rerun()
@@ -259,15 +283,22 @@ def _onglet_claude() -> None:
     c1, c2, c3 = st.columns(3)
     budget = c1.number_input("Coût maximal par question ($)", min_value=0.0, max_value=50.0, step=0.5,
                              value=float(reg.budget_usd), help="0 = aucun plafond. Sans effet sur un abonnement.")
-    max_tours = c2.number_input("Étapes maximales par question", min_value=5, max_value=200, value=int(reg.max_tours))
+    max_tours = c2.number_input("Étapes maximales par question", min_value=5, max_value=200, value=int(reg.max_tours),
+                                help="60 conseillé si tu fais générer des fichiers d'interface.")
     requetes = c3.number_input("Accès base par question", min_value=0, max_value=100, value=int(reg.requetes_base))
+    requetes_generation = c3.number_input(
+        "Accès base pour une génération de fichier", min_value=0, max_value=200,
+        value=int(reg.requetes_base_generation),
+        help="Plafond d'une question qui crée un fichier d'interface : lire le format, la donnée source et ses "
+             "données liées demande plus d'accès qu'une question.")
 
     if st.button("Enregistrer", type="primary", key="enregistrer-claude"):
         config.enregistrer_secrets({"CLAUDE_AUTH": mode, "CLAUDE_CONFIG_DIR": dossier if mode == "compte" else compte["dossier"],
                                     "ANTHROPIC_API_KEY": cle})
         try:
             config.enregistrer(config.Reglages(modele=modele or "", effort=effort, max_tours=int(max_tours),
-                                               budget_usd=float(budget), requetes_base=int(requetes)),
+                                               budget_usd=float(budget), requetes_base=int(requetes),
+                                               requetes_base_generation=int(requetes_generation)),
                                config.tous_les_profils())
             st.success("Réglages Claude enregistrés : ils s'appliquent dès la prochaine question.")
         except config.ConfigError as e:

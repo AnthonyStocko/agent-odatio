@@ -60,7 +60,7 @@ def _environnement(profil: config.Profil | None):
                 os.environ[nom] = valeur
 
 
-def _journal(profil: config.Profil | None, outil: str, details: dict, erreur: str = "") -> None:
+def journal(profil: config.Profil | None, outil: str, details: dict, erreur: str = "") -> None:
     """Trace des appels (.cache/journal/outils.jsonl) : outil, tables lues, erreur ; jamais le texte d'une
     requête ni les données renvoyées, qui peuvent être nominatives."""
     try:
@@ -81,13 +81,13 @@ def _base(profil: config.Profil, outil: str, details: dict, appel) -> str:
         with _environnement(profil):
             texte = appel(profil.base.schema)
     except db_tools.DbError as e:
-        _journal(profil, outil, details, str(e))
+        journal(profil, outil, details, str(e))
         raise OutilErreur(mask_secrets(str(e))[0])
     except Exception as e:  # pilote absent, réseau…
         message = mask_secrets(f"{type(e).__name__} : {e}")[0]
-        _journal(profil, outil, details, message)
+        journal(profil, outil, details, message)
         raise OutilErreur(message)
-    _journal(profil, outil, details)
+    journal(profil, outil, details)
     return mask_secrets(texte)[0]
 
 
@@ -127,9 +127,9 @@ def logs_rechercher(profil: config.Profil, debut: str, fin: str, recherche: str 
         with _environnement(profil):
             lignes = groundcover_tools.search(start, end, recherche, max(1, min(int(limite), LIGNES_LOGS_MAX)))
     except groundcover_tools.GroundcoverError as e:
-        _journal(profil, "logs_rechercher", details, str(e))
+        journal(profil, "logs_rechercher", details, str(e))
         raise OutilErreur(mask_secrets(str(e))[0])
-    _journal(profil, "logs_rechercher", details)
+    journal(profil, "logs_rechercher", details)
     return "\n".join(groundcover_tools.format_row(r) for r in lignes) or "(aucune ligne)"
 
 
@@ -148,9 +148,9 @@ def jira_ticket(cle: str, profil: config.Profil | None = None) -> dict:
     with _environnement(None):
         donnees = jira_tools.get_full_jira_issue_context(cle)
     if donnees.get("error"):
-        _journal(profil, "jira_ticket", {"ticket": cle}, donnees["error"])
+        journal(profil, "jira_ticket", {"ticket": cle}, donnees["error"])
         raise OutilErreur(mask_secrets(donnees["error"])[0])
-    _journal(profil, "jira_ticket", {"ticket": cle})
+    journal(profil, "jira_ticket", {"ticket": cle})
     blocs = [f"# {cle} — {donnees.get('summary', '')}"]
     if donnees.get("components"):
         blocs.append("Composants : " + ", ".join(donnees["components"]))

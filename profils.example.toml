@@ -6,6 +6,7 @@ effort = "medium"     # low, medium, high, xhigh, max ; vide = défaut
 max_tours = 40        # étapes (outils appelés) au plus par question
 budget_usd = 1.0      # coût maximal par question, en dollars (0 = aucun plafond)
 requetes_base = 15    # accès base au plus par question
+requetes_base_generation = 40   # accès base au plus pour une question qui génère un fichier d'interface
 
 # ---------------------------------------------------------------------------------------------
 # Odatio sur ton poste : sources locales, logs locaux, base locale
@@ -23,6 +24,10 @@ chemin = "C:/dev/client-x"
 
 [profils.local.logs]
 dossiers = ["C:/odatio/logs"]
+
+[profils.local.fichiers]
+dossier = ""                     # fichiers d'interface générés ; vide = .cache/fichiers/local
+donnees_reelles = false          # true seulement sur une base de test
 
 [profils.local.base]
 type = "postgresql"              # postgresql, oracle, sqlserver, mysql
