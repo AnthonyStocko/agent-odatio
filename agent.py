@@ -6,6 +6,10 @@ Agent fonctionnel Odatio — conversation en ligne de commande.
   python agent.py --profil local                  conversation
   python agent.py --profil local --question "Comment est calculée la date de préparation ?"
   python agent.py --profil local --ticket ODA-1234       conversation sur une tâche Jira à tester
+  python agent.py --profil local --ticket ODA-1234 --documenter [--captures C:/captures]
+                                                  documentation et vidéo de la tâche pour le consultant
+  python agent.py --profil local --documenter "La libération des vagues"   idem, sur une fonctionnalité
+  python agent.py --rendre .cache/documentation/<dossier>    refait document et vidéo après correction
 
 En conversation : /nouveau repart d'une conversation vide, /quitter (ou Ctrl+D) termine.
 """
@@ -15,7 +19,9 @@ import getpass
 import os
 import sys
 
-from odatio_agent import config, outils, sources
+from pathlib import Path
+
+from odatio_agent import config, documentation, outils, sources, video
 from odatio_agent.etapes import resumer
 from odatio_agent.session import Session
 
@@ -73,6 +79,51 @@ async def converser(profil: config.Profil, reglages: config.Reglages, question: 
         await session.fermer()
 
 
+def sujet_documentation(dossier: Path) -> str:
+    fichier = Path(dossier) / "sujet.txt"
+    return fichier.read_text(encoding="utf-8").strip() if fichier.exists() else Path(dossier).name
+
+
+def rendre(dossier: Path, sans_video: bool = False) -> int:
+    try:
+        resultat = documentation.produire(dossier, sujet_documentation(dossier), video_aussi=not sans_video,
+                                          journal=lambda m: print(f"{GRIS}  · {m}{FIN}", flush=True))
+    except (documentation.DocumentationErreur, video.VideoErreur) as e:
+        print(f"{ROUGE}{e}{FIN}")
+        return 1
+    print(f"\n{VERT}✔{FIN} Documentation prête dans {dossier}")
+    for nom in ("markdown", "word", "video", "sous_titres"):
+        if resultat.get(nom):
+            print(f"  {Path(resultat[nom]).name}")
+    if not sans_video and not resultat.get("voix"):
+        print(f"{GRIS}Aucune voix française trouvée : vidéo muette, narration en sous-titres.{FIN}")
+    return 0
+
+
+async def documenter(profil: config.Profil, reglages: config.Reglages, sujet: str, ticket: dict | None, maj: bool,
+                     dossier_captures: str = "", sans_video: bool = False) -> int:
+    titre = f"{ticket['cle']} — {ticket['titre']}" if ticket else sujet
+    dossier = documentation.nouveau_dossier(ticket["cle"] if ticket else sujet)
+    (dossier / "sujet.txt").write_text(titre, encoding="utf-8")
+    if dossier_captures:
+        noms = documentation.copier_captures(dossier, Path(dossier_captures))
+        print(f"{GRIS}{len(noms)} capture(s) : {', '.join(noms) or 'aucune'}{FIN}")
+    prets = sources.preparer(profil, mettre_a_jour=maj)
+    logs = sources.dossiers_logs(profil)
+    racines = [chemin for _, chemin in prets] + logs
+    session = Session(profil, prets, logs, reglages, getpass.getuser(), ticket=ticket, dossier_documentation=dossier)
+    await session.ouvrir()
+    try:
+        await _poser(session, documentation.question(sujet, ticket), racines)
+    finally:
+        await session.fermer()
+    if not session.document:
+        print(f"{ROUGE}L'agent n'a pas enregistré de document (étapes ou budget épuisés ?). Relance avec un plafond "
+              f"plus haut, ou précise le sujet.{FIN}")
+        return 1
+    return rendre(dossier, sans_video)
+
+
 def tester(profil: config.Profil, maj: bool) -> int:
     ok_global = True
     try:
@@ -106,9 +157,17 @@ def main() -> int:
     parser.add_argument("--liste", action="store_true", help="liste les profils")
     parser.add_argument("--ticket", default="", help="tâche Jira à tester, donnée à l'agent comme contexte")
     parser.add_argument("--sans-maj", action="store_true", help="ne met pas à jour les dépôts déjà clonés")
+    parser.add_argument("--documenter", nargs="?", const="", default=None, metavar="SUJET",
+                        help="documentation et vidéo pour le consultant (de la tâche --ticket, ou du SUJET)")
+    parser.add_argument("--captures", default="", help="dossier de captures d'écran à intégrer à la documentation")
+    parser.add_argument("--sans-video", action="store_true", help="documentation écrite seulement")
+    parser.add_argument("--rendre", default="", metavar="DOSSIER",
+                        help="refait document et vidéo d'un dossier de documentation (après correction de document.json)")
     args = parser.parse_args()
 
     config.charger_secrets()
+    if args.rendre:
+        return rendre(Path(args.rendre), args.sans_video)
     try:
         if args.liste or not args.profil:
             noms = config.noms_profils()
@@ -121,6 +180,12 @@ def main() -> int:
         ticket = outils.jira_ticket(args.ticket, profil) if args.ticket else None
         if ticket:
             print(f"{GRIS}Tâche {ticket['cle']} : {ticket['titre']}{FIN}")
+        if args.documenter is not None:
+            if not ticket and not args.documenter.strip():
+                print(f"{ROUGE}Indique la tâche (--ticket) ou la fonctionnalité à documenter (--documenter \"…\").{FIN}")
+                return 2
+            return asyncio.run(documenter(profil, config.reglages(), args.documenter.strip(), ticket,
+                                          not args.sans_maj, args.captures, args.sans_video))
         return asyncio.run(converser(profil, config.reglages(), args.question, not args.sans_maj, ticket))
     except (config.ConfigError, sources.SourceError, outils.OutilErreur) as e:
         print(f"{ROUGE}{e}{FIN}")

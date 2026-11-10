@@ -13,7 +13,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from . import config, outils, sources
+from . import config, documentation, outils, sources, video
 from .etapes import resumer
 from .session import Session
 
@@ -30,11 +30,13 @@ def _etat():
     etat.setdefault("profil_actif", "")
     etat.setdefault("preparation", {})    # profil -> (sources prêtes, dossiers de logs)
     etat.setdefault("ticket", None)       # {"cle", "titre", "texte"} de la tâche à tester
+    etat.setdefault("documentation", None)  # {"dossier", "sujet", "fichiers"} de la dernière documentation produite
     return etat
 
 
 def nouvelle_conversation() -> None:
     st.session_state.messages, st.session_state.reprise = [], ""
+    st.session_state.documentation = None
 
 
 def _preparer(profil: config.Profil, mettre_a_jour: bool = False):
@@ -86,6 +88,147 @@ async def _repondre(profil, prets, logs, question, sur_texte, sur_outil):
         return await session.demander(question, sur_texte, sur_outil)
     finally:
         await session.fermer()
+
+
+# ---------------------------------------------------------------------------
+# Documentation pour le consultant fonctionnel
+# ---------------------------------------------------------------------------
+
+async def _documenter(profil, prets, logs, dossier, question, sur_texte, sur_outil, reprise):
+    session = Session(profil, prets, logs, config.reglages(), getpass.getuser(), reprise=reprise,
+                      ticket=st.session_state.ticket, dossier_documentation=dossier)
+    await session.ouvrir()
+    try:
+        bilan = await session.demander(question, sur_texte, sur_outil)
+    finally:
+        await session.fermer()
+    return bilan, session.document
+
+
+def _generer_documentation(profil, sujet: str, captures, avec_video: bool) -> None:
+    etat = st.session_state
+    try:
+        prets, logs = _preparer(profil)
+    except sources.SourceError as e:
+        st.error(str(e))
+        return
+    racines = [chemin for _, chemin in prets] + logs
+    titre = f"{etat.ticket['cle']} — {etat.ticket['titre']}" if etat.ticket else sujet
+    dossier = documentation.nouveau_dossier(etat.ticket["cle"] if etat.ticket else sujet)
+    (dossier / "sujet.txt").write_text(titre, encoding="utf-8")
+    try:
+        for fichier in captures or []:
+            documentation.ajouter_capture(dossier, fichier.name, fichier.getvalue())
+    except documentation.DocumentationErreur as e:
+        st.error(str(e))
+        return
+
+    statut = st.status("L'agent enquête et rédige la documentation…", expanded=True)
+    etapes = []
+
+    def sur_outil(nom_outil, entree):
+        etapes.append(resumer(nom_outil, entree, racines))
+        statut.write(etapes[-1])
+
+    question = documentation.question(sujet, etat.ticket)
+    try:  # reprend la conversation en cours si elle existe : l'enquête déjà faite sert de point de départ
+        bilan, document = asyncio.run(_documenter(profil, prets, logs, dossier, question, lambda _: None, sur_outil,
+                                                  etat.reprise))
+    except Exception as e:
+        statut.update(label="Échec", state="error")
+        st.error(f"L'agent n'a pas pu rédiger la documentation : {e}")
+        return
+    if not document:
+        statut.update(label="Aucun document enregistré", state="error")
+        st.error("L'agent n'a pas enregistré de document" + (f" ({bilan.message})" if bilan.message else "") +
+                 ". Augmente les étapes ou le budget par question dans la configuration, ou précise le sujet.")
+        return
+
+    statut.update(label="Mise en forme du document et de la vidéo…")
+    try:
+        fichiers = documentation.produire(dossier, titre, video_aussi=avec_video, journal=statut.write)
+    except (documentation.DocumentationErreur, video.VideoErreur) as e:
+        statut.update(label="Échec de la mise en forme", state="error")
+        st.error(str(e))
+        return
+    cout = f"{bilan.cout_usd:.2f} $" if bilan.cout_usd is not None else "coût inconnu"
+    statut.update(label=f"Documentation prête ({len(etapes)} étape(s), {cout})", state="complete", expanded=False)
+    etat.documentation = {"dossier": str(dossier), "sujet": titre,
+                          "fichiers": {k: str(v) for k, v in fichiers.items() if v and k != "voix"},
+                          "voix": fichiers.get("voix", "")}
+
+
+def _afficher_documentation() -> None:
+    etat = st.session_state
+    doc = etat.documentation
+    fichiers = {k: Path(v) for k, v in doc["fichiers"].items() if Path(v).exists()}
+    st.markdown(f"**{doc['sujet']}**")
+    if fichiers.get("video"):
+        st.video(str(fichiers["video"]), subtitles={"Français": str(fichiers["sous_titres"])}
+                 if fichiers.get("sous_titres") else None)
+        if not doc.get("voix"):
+            st.caption("Aucune voix française installée sur ce poste : la narration est en sous-titres.")
+    with st.expander("Document écrit"):
+        st.markdown(fichiers["markdown"].read_text(encoding="utf-8"))
+    st.caption("À relire avant envoi. Pour corriger : modifie document.json dans "
+               f"{doc['dossier']}, puis « Refaire à partir de document.json ».")
+
+    colonnes = st.columns(4)
+    for colonne, (cle, libelle, mime) in zip(colonnes, (
+            ("video", "Vidéo", "video/mp4"),
+            ("word", "Word", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            ("markdown", "Markdown", "text/markdown"))):
+        if fichiers.get(cle):
+            colonne.download_button(libelle, fichiers[cle].read_bytes(), file_name=fichiers[cle].name, mime=mime,
+                                    width="stretch", key=f"telecharger-{cle}")
+    if colonnes[3].button("Refaire", width="stretch", help="Refait document et vidéo à partir de document.json"):
+        with st.spinner("Mise en forme…"):
+            try:
+                rendu = documentation.produire(Path(doc["dossier"]), doc["sujet"], journal=lambda _: None)
+                doc["fichiers"] = {k: str(v) for k, v in rendu.items() if v and k != "voix"}
+                st.rerun()
+            except (documentation.DocumentationErreur, video.VideoErreur) as e:
+                st.error(str(e))
+
+    if etat.ticket and config.jira_configure():
+        a_joindre = [fichiers[k] for k in ("video", "word") if fichiers.get(k)]
+        if st.button(f"Joindre au ticket {etat.ticket['cle']}", help="Ajoute la vidéo et le document Word en pièces "
+                     "jointes du ticket Jira (seule action d'écriture, faite à ta demande)."):
+            try:
+                with st.spinner("Envoi vers Jira…"):
+                    resultats = outils.jira_joindre(etat.ticket["cle"], a_joindre)
+                for nom, ok, message in resultats:
+                    (st.success if ok else st.error)(f"{nom} : {message}")
+            except outils.OutilErreur as e:
+                st.error(str(e))
+
+
+def _bloc_documentation(profil) -> None:
+    etat = st.session_state
+    with st.expander("Documentation pour le consultant fonctionnel", icon=":material/movie:",
+                     expanded=etat.documentation is not None):
+        if etat.documentation:
+            _afficher_documentation()
+            st.divider()
+        st.caption("L'agent enquête comme pour une question (en repartant de la conversation en cours), puis rédige "
+                   "un document et une vidéo commentée : besoin, écrans, règles de gestion, paramétrage, cas de test.")
+        with st.form("formulaire-documentation", border=False):
+            sujet = st.text_input("Fonctionnalité à documenter", value="" if etat.ticket else "",
+                                  placeholder=(f"La tâche {etat.ticket['cle']} (ou précise un angle)" if etat.ticket
+                                               else "ex. La libération manuelle des vagues"))
+            captures = st.file_uploader("Captures d'écran (facultatif)", type=["png", "jpg", "jpeg", "webp"],
+                                        accept_multiple_files=True,
+                                        help="Nomme-les d'après l'écran (suivi-vagues.png) : l'agent les place "
+                                             "dans les bonnes scènes.")
+            avec_video = st.checkbox("Produire la vidéo", value=True)
+            lancer = st.form_submit_button("Générer la documentation", type="primary")
+        if lancer:
+            if not etat.ticket and not sujet.strip():
+                st.error("Charge une tâche Jira ou indique la fonctionnalité à documenter.")
+            else:
+                _generer_documentation(profil, sujet.strip(), captures, avec_video)
+                if etat.documentation:
+                    st.rerun()
 
 
 def _barre_laterale(page_configuration) -> config.Profil | None:
@@ -163,6 +306,7 @@ def page(page_configuration) -> None:
     contexte = f" sur la tâche {etat.ticket['cle']}" if etat.ticket else ""
     st.caption(f"Projet « {profil.nom} »{contexte}. L'agent lit les sources, la base et les logs, sans rien modifier ; "
                f"il n'écrit que les fichiers d'interface que tu lui demandes, dans {config.dossier_fichiers(profil)}.")
+    _bloc_documentation(profil)
 
     question_auto = None
     if not etat.messages:

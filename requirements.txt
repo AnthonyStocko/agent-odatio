@@ -5,6 +5,11 @@ sqlalchemy>=2.0
 streamlit>=1.50
 tomli-w>=1.0
 
+# Documentation pour le consultant : diapositives, vidéo (ffmpeg fourni), document Word
+pillow>=10.1
+imageio-ffmpeg>=0.5
+python-docx>=1.1
+
 # Pilote de la base Odatio : décommente celui qu'il te faut
 psycopg2-binary>=2.9   # PostgreSQL
 # oracledb             # Oracle

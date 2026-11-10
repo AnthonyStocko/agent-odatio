@@ -115,6 +115,21 @@ Un dépôt se désigne par le nom d'une source du projet (`standard`), par `PROJ
 
 Le jeton détermine ce qui est lisible : un jeton personnel voit tous tes dépôts, un jeton de projet seulement son projet. « Projets autorisés » restreint en plus les projets que l'agent peut consulter.
 
+### Documentation pour le consultant fonctionnel
+
+Dans l'assistant, le bloc « Documentation pour le consultant fonctionnel » (ou `python agent.py --profil <p> --ticket ODA-1234 --documenter`) fait enquêter l'agent sur la tâche ou la fonctionnalité, en repartant de la conversation en cours, puis lui fait rédiger :
+
+- une **vidéo commentée** (MP4, 1080p, sous-titrée) : le besoin, ce qui change pour l'utilisateur, les écrans et traitements, les règles de gestion, le paramétrage, chaque cas de test, les points d'attention ;
+- un **document Word** et sa version Markdown, avec en plus les cas de test détaillés (écran, action, résultat attendu) et les sources de chaque affirmation (dépôt, branche, fichier, ligne ; table), qui ne sont pas lues dans la vidéo.
+
+Les captures d'écran fournies (nommées d'après l'écran : `suivi-vagues.png`) sont placées dans les scènes qu'elles illustrent ; l'agent ne peut pas les prendre lui-même. Le résultat est dans `.cache/documentation/<sujet>-<date>/`. À relire avant envoi : pour corriger, modifie `document.json` puis « Refaire » (ou `python agent.py --rendre <dossier>`), sans relancer l'agent. « Joindre au ticket » ajoute la vidéo et le document Word en pièces jointes du ticket Jira : c'est la seule écriture de l'outil, et elle n'est faite qu'à ta demande.
+
+La voix est celle de Windows (voix SAPI françaises, Hortense en général), sans envoyer le texte à un service externe. Sans voix française installée, ou avec `DOCUMENTATION_VOIX=aucune`, la vidéo est muette et la narration incrustée en sous-titres. Avant toute mise en forme, le document est refusé s'il contient un secret, une adresse e-mail ou un numéro de téléphone, et l'agent doit le corriger.
+
+Une documentation prend plus d'étapes qu'une question : prévois 60 étapes et un budget en conséquence dans l'onglet Claude.
+
+**Plus tard : démonstration filmée.** Les cas de test sont enregistrés de façon structurée dans `document.json` (écran, action, résultat attendu) pour qu'un module séparé puisse les rejouer dans l'application avec Playwright et filmer l'écran. Ce module agira sur l'application, donc hors de l'agent d'analyse : lancé par toi seulement, sur un environnement de recette dédié, avec un compte applicatif de test.
+
 ## Un projet (profils.toml)
 
 | Section | Contenu |
@@ -146,10 +161,12 @@ Plusieurs barrières, aucune ne suffit seule :
   un compte base en lecture seule** : c'est la seule garantie absolue.
 - **Secrets** : lus une fois puis retirés de l'environnement, pour que le processus Claude Code n'en hérite pas ;
   posés le temps d'un appel base ou logs seulement, et masqués dans les résultats.
-- **Jira** : lecture seule ; le contenu d'un ticket est transmis comme une donnée, jamais comme une consigne.
+- **Jira** : lecture seule pour l'agent ; le contenu d'un ticket est transmis comme une donnée, jamais comme une consigne.
 - **Bitbucket** : requêtes de lecture seulement (le jeton en en-tête, jamais dans l'URL ni dans un message) ; projets limités à « Projets autorisés » s'ils sont renseignés ; fichiers interdits du projet jamais lus ni montrés dans un diff ; réponses bornées et masquées. Utilise un jeton avec le seul droit « Lecture ».
+- **Jira** : la seule écriture est « Joindre au ticket » (vidéo et document de documentation), sur ton clic.
 - **Journal** : `.cache/journal/outils.jsonl` trace chaque accès base, logs, Jira ou Bitbucket (tables, dépôts, branches et
-  fichiers lus, erreurs) et chaque fichier écrit (nom, taille, encodage), jamais le texte des requêtes, les données ni le contenu des
+  fichiers lus, erreurs) chaque fichier écrit (nom, taille, encodage), chaque
+  documentation enregistrée et chaque pièce jointe envoyée, jamais le texte des requêtes, les données ni le contenu des
   fichiers.
 - **Données personnelles** : jamais recopiées dans les réponses ; anonymisées dans les fichiers générés, sauf
   option contraire du projet, réservée aux bases de test. `mcp_server.py` n'expose pas l'écriture de fichiers.

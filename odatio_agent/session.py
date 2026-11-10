@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher, ResultMessage,
                               TextBlock, ToolUseBlock, create_sdk_mcp_server, tool)
 
-from . import bitbucket, config, consignes, fichiers, outils
+from pathlib import Path
+
+from . import bitbucket, config, consignes, documentation, fichiers, outils
 from .garde import creer_garde
 
 SERVEUR = "odatio"
@@ -36,12 +38,16 @@ def _texte(texte: str, erreur: bool = False) -> dict:
 
 class Session:
     def __init__(self, profil: config.Profil, sources: list, logs: list, reglages: config.Reglages,
-                 utilisateur: str = "", reprise: str = "", ticket: dict | None = None):
+                 utilisateur: str = "", reprise: str = "", ticket: dict | None = None,
+                 dossier_documentation: Path | None = None):
         """reprise : identifiant d'une conversation précédente à poursuivre (Bilan.session_id), utilisé par
         l'IHM qui ouvre une session par question. ticket : tâche Jira à tester (outils.jira_ticket), donnée
-        à l'agent comme contexte."""
+        à l'agent comme contexte. dossier_documentation : mode documentation (documentation.py), l'agent y
+        enregistre son document avec l'outil documentation_enregistrer."""
         self.profil, self.reglages = profil, reglages
         self.requetes_base, self.generation, self.fichiers = 0, False, []
+        self.dossier_documentation = Path(dossier_documentation) if dossier_documentation else None
+        self.document = None   # document accepté par documentation_enregistrer
         racines = [chemin for _, chemin in sources] + list(logs)
         sortie = config.dossier_fichiers(profil)
         sortie.mkdir(parents=True, exist_ok=True)
@@ -49,7 +55,9 @@ class Session:
         noms_maison = [f"mcp__{SERVEUR}__{t.name}" for t in outils_maison]
 
         self.options = ClaudeAgentOptions(
-            system_prompt=consignes.construire(profil, sources, logs, utilisateur, reglages, ticket),
+            system_prompt=consignes.construire(profil, sources, logs, utilisateur, reglages, ticket,
+                                               documentation.captures(self.dossier_documentation)
+                                               if self.dossier_documentation else None),
             tools=OUTILS_FICHIERS,                       # aucun autre outil intégré : ni Bash, ni Edit, ni Write
             allowed_tools=OUTILS_FICHIERS + noms_maison,  # autorisés sans confirmation
             permission_mode="dontAsk",                    # tout le reste est refusé
@@ -139,6 +147,8 @@ class Session:
 
         if bitbucket.configure(profil):
             liste += self._outils_bitbucket(executer)
+        if self.dossier_documentation:
+            liste.append(self._outil_documentation())
         liste += self._outils_fichiers()
         return liste
 
@@ -187,6 +197,24 @@ class Session:
             return _texte(" ".join(notes))
 
         return [generation_demarrer, fichier_ecrire]
+
+    def _outil_documentation(self):
+        @tool("documentation_enregistrer", "Enregistre la documentation fonctionnelle (document + scénario de la "
+              "vidéo) destinée au consultant. À appeler une fois l'enquête terminée ; si le document est refusé, "
+              "corrige les points signalés et renvoie-le en entier.", documentation.SCHEMA)
+        async def documentation_enregistrer(args):
+            try:
+                self.document = documentation.enregistrer(self.dossier_documentation, args)
+            except documentation.DocumentationErreur as e:
+                outils.journal(self.profil, "documentation_enregistrer", {}, str(e)[:300])
+                return _texte(str(e), True)
+            outils.journal(self.profil, "documentation_enregistrer", {"scenes": len(self.document["scenes"])})
+            return _texte(f"Document enregistré : {len(self.document['scenes'])} scènes, "
+                          f"{len(self.document['cas_de_test'])} cas de test, vidéo d'environ "
+                          f"{documentation.duree_estimee(self.document)} min. Termine par une phrase de synthèse, "
+                          f"sans recopier le document.")
+
+        return documentation_enregistrer
 
     def _outils_bitbucket(self, executer) -> list:
         depots_profil = ", ".join(s.nom for s in self.profil.sources if s.depot) or "aucun"

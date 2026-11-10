@@ -216,6 +216,25 @@ def bitbucket_chercher(profil, texte: str, depot: str = "", projet: str = "") ->
                       lambda: bitbucket.chercher(profil, texte, depot, projet))
 
 
+def jira_joindre(cle: str, fichiers: list, profil: config.Profil | None = None) -> list:
+    """Joint des fichiers au ticket (action d'écriture, déclenchée uniquement par l'utilisateur) :
+    [(nom du fichier, ok, message)]."""
+    cle = (cle or "").strip().upper()
+    if not CLE_JIRA.match(cle):
+        raise OutilErreur(f"Clé de ticket invalide : « {cle} ».")
+    if not config.jira_configure():
+        raise OutilErreur("Jira n'est pas configuré (onglet Configuration).")
+    resultats = []
+    with _environnement(None):
+        for fichier in fichiers:
+            message = mask_secrets(jira_tools.add_jira_attachment(cle, str(fichier)))[0]
+            ok = "succès" in message
+            resultats.append((os.path.basename(str(fichier)), ok, message if not ok else "joint"))
+            journal(profil, "jira_joindre", {"ticket": cle, "fichier": os.path.basename(str(fichier))},
+                     "" if ok else message)
+    return resultats
+
+
 def tester_jira() -> tuple:
     """(ok, message) : identifiants Jira valides ?"""
     if not config.jira_configure():

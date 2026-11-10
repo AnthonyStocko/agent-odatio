@@ -104,8 +104,32 @@ METHODE_BITBUCKET = """4. Bitbucket seulement si les sources clonées ne suffise
 """
 
 
+DOCUMENTATION = """
+=== MODE DOCUMENTATION : POUR LE CONSULTANT FONCTIONNEL ===
+On te demande de documenter une fonctionnalité pour un consultant fonctionnel, qui la présentera ou la fera
+tester au client. Il connaît le métier et l'application, pas le code. Ta documentation devient une vidéo
+commentée (diapositives lues par une voix de synthèse) et un document écrit.
+1. Enquête comme d'habitude, en allant jusqu'au bout : ticket, branche Bitbucket et ce qu'elle change si la
+   tâche n'est pas fusionnée, sources (écrans, règles, traitements), paramétrage effectif en base.
+2. Puis appelle documentation_enregistrer UNE fois avec le document complet :
+   - scènes, dans cet ordre en général : le besoin et l'objectif ; ce qui change pour l'utilisateur ; une
+     scène par écran ou traitement concerné ; les règles de gestion (cas, conditions, effets) ; le
+     paramétrage nécessaire ; ce qui ne change pas ou les limites. 5 à 10 scènes ;
+   - points : courts, affichés à l'écran, un fait par point ;
+   - narration : texte LU À VOIX HAUTE, phrases courtes et complètes, 90 mots au plus, sans abréviation,
+     sans symbole ni code, sans parenthèse, ton neutre et professionnel, sans tutoiement ;
+   - cas de test : nominaux et limites, chaque étape avec l'écran, l'action et le résultat attendu, assez
+     précis pour être rejoués tels quels ;
+   - preuves : pour chaque affirmation importante, la source (dépôt, branche, fichier et ligne ; table) et ce
+     qui est déduit plutôt que vérifié. Les preuves vont dans le document écrit, pas dans la vidéo.
+   Vocabulaire métier uniquement : aucun nom de classe, de méthode, de table ni de colonne hors des preuves.
+   Aucune donnée nominative, aucun secret.
+{captures}3. Si le document est refusé, corrige exactement les points signalés et renvoie-le en entier.
+"""
+
+
 def construire(profil: config.Profil, sources: list, logs: list, utilisateur: str, reglages: config.Reglages,
-               ticket: dict | None = None) -> str:
+               ticket: dict | None = None, captures: list | None = None) -> str:
     lignes_sources = "\n".join(f"- {nom} : {chemin}" for nom, chemin in sources)
 
     blocs_logs = []
@@ -143,10 +167,16 @@ def construire(profil: config.Profil, sources: list, logs: list, utilisateur: st
                if avec_bitbucket else "Si la tâche n'est pas encore dans les sources, dis-le clairement.")
     bloc_ticket = (TICKET.format(cle=ticket["cle"], utilisateur=utilisateur or "L'utilisateur", texte=ticket["texte"],
                                  absente=absente) if ticket else "")
+    bloc_documentation = ""
+    if captures is not None:
+        liste = ("   - captures d'écran fournies, à associer aux scènes qu'elles illustrent (champ capture, nom exact) "
+                 "d'après leur nom :\n" + "\n".join(f"     {c}" for c in captures) + "\n") if captures else \
+                "   - aucune capture d'écran fournie : laisse le champ capture vide.\n"
+        bloc_documentation = DOCUMENTATION.format(captures=liste)
     return MODELE.format(utilisateur=utilisateur or "l'utilisateur", profil=profil.nom, jira=jira, ticket=bloc_ticket,
                          bitbucket=bitbucket_txt, methode_bitbucket=methode_bitbucket,
                          description=profil.description or "", sources=lignes_sources, logs=logs_txt,
                          base=base_txt, ordre_specifique=ordre, requetes_base=reglages.requetes_base,
                          requetes_generation=reglages.requetes_base_generation,
                          dossier_fichiers=config.dossier_fichiers(profil),
-                         donnees_personnelles=DONNEES_REELLES if profil.donnees_reelles else ANONYMISER)
+                         donnees_personnelles=DONNEES_REELLES if profil.donnees_reelles else ANONYMISER) + bloc_documentation
