@@ -2,11 +2,9 @@
 Vidéo explicative d'une fonctionnalité : une diapositive par scène du document (Pillow), lue par une voix de
 synthèse française, assemblée en MP4 avec des sous-titres (ffmpeg fourni par imageio-ffmpeg).
 
-Voix, sans envoyer le texte à un service externe :
-- Windows : voix SAPI installées (System.Speech, par PowerShell), la première voix française trouvée ;
-- Linux : espeak-ng, s'il est installé ;
-- sinon, ou avec DOCUMENTATION_VOIX=aucune : vidéo muette, la narration est incrustée en sous-titres.
-DOCUMENTATION_VOIX peut aussi donner une partie du nom de la voix voulue (ex. « Hortense »).
+Voix (voir la section « Voix ») : par défaut Piper, voix neuronale locale, sans envoyer le texte à un service
+externe ; au choix les voix en ligne de Microsoft Edge, plus naturelles encore ; à défaut les voix de Windows.
+Sans voix, ou avec DOCUMENTATION_VOIX=aucune : vidéo muette, la narration est incrustée en sous-titres.
 """
 import os
 import platform
@@ -119,9 +117,10 @@ def _couper(texte: str, police, largeur: int) -> list:
     return lignes + ([ligne] if ligne else [])
 
 
-def _paragraphes(dessin, points: list, x: int, y: int, largeur: int, hauteur_max: int, puces: bool = True) -> int:
+def _paragraphes(dessin, points: list, x: int, y: int, largeur: int, hauteur_max: int, puces: bool = True,
+                 taille_max: int = 46) -> int:
     """Écrit des points à puces en réduisant la taille si besoin ; renvoie le y final."""
-    for taille in (46, 42, 38, 34, 30, 27):
+    for taille in [t for t in (46, 42, 38, 34, 30, 27) if t <= taille_max]:
         police = _police(taille)
         interligne, ecart = int(taille * 1.32), int(taille * 0.75)
         blocs = [_couper(p, police, largeur - (60 if puces else 0)) for p in points]
@@ -185,18 +184,19 @@ def diapositive(seq: dict, numero: int, total: int, sujet: str, dossier: Path, s
             dessin.text((MARGE, y), ligne, font=police_titre, fill=BLANC)
             y += int(police_titre.size * 1.2)
 
-        haut, bas = BANDEAU + 70, HAUTEUR - (290 if sous_titre else 110)
+        haut, bas = BANDEAU + 60, HAUTEUR - (290 if sous_titre else 110)
         capture = Path(dossier) / "captures" / seq.get("capture", "") if seq.get("capture") else None
-        if capture and capture.is_file():
-            largeur_texte = int((LARGEUR - 2 * MARGE) * 0.42)
-            _paragraphes(dessin, seq["points"], MARGE, haut, largeur_texte, bas - haut)
-            zone = (LARGEUR - MARGE - (MARGE + largeur_texte + 60), bas - haut)
+        if capture and capture.is_file():  # la capture d'écran en grand, les points dans une colonne étroite
+            largeur_texte = 440
+            _paragraphes(dessin, seq["points"], MARGE, haut, largeur_texte, bas - haut, taille_max=34)
+            zone = (LARGEUR - 2 * MARGE - largeur_texte - 50, bas - haut)
             try:
                 img = ImageOps.contain(Image.open(capture).convert("RGB"), zone)
                 x = LARGEUR - MARGE - img.width
-                dessin.rectangle([x - 3, haut - 3, x + img.width + 2, haut + img.height + 2], outline=(200, 205, 212),
-                                 width=3)
+                dessin.rectangle([x + 8, haut + 8, x + img.width + 8, haut + img.height + 8], fill=(214, 219, 226))
                 image.paste(img, (x, haut))
+                dessin.rectangle([x - 2, haut - 2, x + img.width + 1, haut + img.height + 1], outline=(150, 158, 170),
+                                 width=2)
             except OSError:
                 pass
         elif seq["type"] == "fin":
@@ -218,14 +218,155 @@ def diapositive(seq: dict, numero: int, total: int, sujet: str, dossier: Path, s
 # ---------------------------------------------------------------------------
 # Voix
 # ---------------------------------------------------------------------------
+#
+# Moteurs, du plus naturel au plus rudimentaire :
+#   piper    voix neuronale LOCALE (paquet piper-tts) ; le modèle (60 Mo) est téléchargé une fois dans
+#            .cache/voix. Rien ne sort du poste.
+#   edge     voix neuronales de Microsoft Edge (paquet edge-tts), les plus naturelles ; le texte de la narration
+#            est envoyé au service en ligne de Microsoft. Jamais choisi automatiquement.
+#   windows  voix SAPI installées sur le poste (Hortense…), par PowerShell.
+#   espeak   espeak-ng (Linux), rudimentaire.
+# DOCUMENTATION_VOIX : auto (piper, sinon windows, sinon espeak), piper, edge, windows, espeak ou aucune.
+# DOCUMENTATION_VOIX_NOM : la voix voulue (ex. fr_FR-tom-medium, fr-FR-HenriNeural, Hortense).
 
-_MOTEUR = None
+PIPER_DEFAUT = "fr_FR-siwis-medium"
+EDGE_DEFAUT = "fr-FR-DeniseNeural"
+VOIX_PIPER = ["fr_FR-siwis-medium", "fr_FR-tom-medium", "fr_FR-upmc-medium", "fr_FR-gilles-low"]
+VOIX_EDGE = ["fr-FR-DeniseNeural", "fr-FR-HenriNeural", "fr-FR-VivienneMultilingualNeural",
+             "fr-FR-RemyMultilingualNeural", "fr-FR-EloiseNeural"]
+MOTEURS = ["auto", "piper", "edge", "windows", "espeak", "aucune"]
+ESSAI = "Ceci est un essai de la voix utilisée pour les vidéos de documentation."
+
+_MOTEUR = {}        # (réglage, nom) -> (moteur, voix)
+_PIPER = {}         # chemin du modèle -> PiperVoice chargé
+_DERNIERE_ERREUR = ""
 
 
-def _executer(commande: list, delai: int = 300) -> subprocess.CompletedProcess:
+def _executer(commande: list, delai: int = 300, entree: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(commande, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=delai, creationflags=SANS_FENETRE)
+                          timeout=delai, creationflags=SANS_FENETRE, input=entree)
 
+
+def _reglage() -> tuple:
+    """(moteur demandé, nom de voix demandé). Un réglage qui n'est pas un moteur est un nom de voix Windows
+    (compatibilité avec la première version)."""
+    moteur = config.secret("DOCUMENTATION_VOIX").strip()
+    nom = config.secret("DOCUMENTATION_VOIX_NOM").strip()
+    if moteur.lower() in ("non", "0"):
+        moteur = "aucune"
+    if moteur and moteur.lower() not in MOTEURS:
+        moteur, nom = "windows", nom or moteur
+    return (moteur.lower() or "auto"), nom
+
+
+# -- Piper (local) ----------------------------------------------------------------------------------------
+
+def _url_piper(nom: str) -> str:
+    """fr_FR-siwis-medium -> …/fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx (dépôt officiel des voix Piper)."""
+    langue, voix, qualite = nom.split("-", 2)
+    return (f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{langue.split('_')[0]}/{langue}/{voix}/"
+            f"{qualite}/{nom}.onnx")
+
+
+def modele_piper(nom: str = "", telecharger: bool = True, journal=lambda m: None) -> Path | None:
+    """Chemin du modèle .onnx : DOCUMENTATION_VOIX_MODELE, sinon .cache/voix/<nom>.onnx, téléchargé au besoin."""
+    impose = config.secret("DOCUMENTATION_VOIX_MODELE")
+    if impose:
+        return Path(impose) if Path(impose).is_file() and Path(impose + ".json").is_file() else None
+    nom = nom or PIPER_DEFAUT
+    if nom.count("-") < 2:
+        return None
+    dossier = config.CACHE / "voix"
+    modele = dossier / f"{nom}.onnx"
+    if modele.is_file() and Path(str(modele) + ".json").is_file():
+        return modele
+    if not telecharger:
+        return None
+    import requests
+    dossier.mkdir(parents=True, exist_ok=True)
+    journal(f"Téléchargement de la voix {nom} (une seule fois, 20 à 70 Mo)…")
+    try:
+        for suffixe in (".onnx.json", ".onnx"):
+            reponse = requests.get(_url_piper(nom) + suffixe.removeprefix(".onnx"), timeout=300, stream=True)
+            reponse.raise_for_status()
+            temporaire = dossier / f"{nom}{suffixe}.partiel"
+            with open(temporaire, "wb") as f:
+                for bloc in reponse.iter_content(1 << 20):
+                    f.write(bloc)
+            temporaire.replace(dossier / f"{nom}{suffixe}")
+    except (requests.RequestException, OSError) as e:
+        if nom == PIPER_DEFAUT and _piper_depuis_github(dossier, nom):
+            return modele
+        global _DERNIERE_ERREUR
+        _DERNIERE_ERREUR = (f"Téléchargement de la voix {nom} impossible ({type(e).__name__}). Dépose à la main "
+                            f"{nom}.onnx et {nom}.onnx.json (huggingface.co/rhasspy/piper-voices) dans {dossier}.")
+        return None
+    return modele
+
+
+def _piper_depuis_github(dossier: Path, nom: str) -> bool:
+    """Repli quand huggingface.co est inaccessible (proxy d'entreprise) : la voix par défaut est aussi publiée
+    dans les versions du projet Piper sur GitHub."""
+    import io
+    import tarfile
+
+    import requests
+    try:
+        reponse = requests.get("https://github.com/rhasspy/piper/releases/download/v0.0.2/"
+                               "voice-fr-siwis-medium.tar.gz", timeout=300)
+        reponse.raise_for_status()
+        with tarfile.open(fileobj=io.BytesIO(reponse.content), mode="r:gz") as archive:
+            for membre in archive.getmembers():
+                suffixe = ".onnx.json" if membre.name.endswith(".onnx.json") else ".onnx" if membre.name.endswith(".onnx") else ""
+                if suffixe and membre.isfile():
+                    (dossier / f"{nom}{suffixe}").write_bytes(archive.extractfile(membre).read())
+    except (requests.RequestException, OSError, tarfile.TarError):
+        return False
+    return (dossier / f"{nom}.onnx").is_file() and (dossier / f"{nom}.onnx.json").is_file()
+
+
+def _piper(texte: str, sortie: Path, modele: Path) -> bool:
+    import logging
+
+    from piper import PiperVoice
+    logging.getLogger("piper").setLevel(logging.ERROR)
+    voix = _PIPER.get(str(modele))
+    if voix is None:
+        voix = _PIPER[str(modele)] = PiperVoice.load(str(modele))
+    with wave.open(str(sortie), "wb") as f:
+        if hasattr(voix, "synthesize_wav"):
+            voix.synthesize_wav(texte, f)          # piper-tts >= 1.3
+        else:
+            voix.synthesize(texte, f)              # versions précédentes
+    return True
+
+
+# -- Edge (en ligne) --------------------------------------------------------------------------------------
+
+def _edge(texte: str, sortie: Path, voix: str) -> bool:
+    import edge_tts
+    mp3 = sortie.with_suffix(".mp3")
+    erreurs = []
+
+    def lancer():  # dans un fil à part : une boucle asyncio peut déjà tourner (agent, Streamlit)
+        import asyncio
+        try:
+            asyncio.run(edge_tts.Communicate(texte, voix).save(str(mp3)))
+        except Exception as e:  # réseau, service indisponible, voix inconnue
+            erreurs.append(e)
+
+    import threading
+    fil = threading.Thread(target=lancer)
+    fil.start()
+    fil.join(120)
+    if erreurs or fil.is_alive() or not mp3.exists():
+        return False
+    r = _executer([_ffmpeg(), "-y", "-loglevel", "error", "-i", str(mp3), "-ar", "44100", "-ac", "1", str(sortie)])
+    mp3.unlink(missing_ok=True)
+    return r.returncode == 0
+
+
+# -- Windows (SAPI) et espeak-ng --------------------------------------------------------------------------
 
 def _script_sapi() -> Path:
     chemin = config.CACHE / "voix_sapi.ps1"
@@ -244,46 +385,116 @@ def _commande_sapi(texte: str = "", sortie: str = "", voulue: str = "") -> list:
     return commande
 
 
-def moteur_voix() -> tuple:
-    """(moteur, nom de la voix) : ("sapi", "Microsoft Hortense…"), ("espeak-ng", "fr") ou ("", "")."""
-    global _MOTEUR
-    if _MOTEUR is not None:
-        return _MOTEUR
-    voulue = config.secret("DOCUMENTATION_VOIX")
-    _MOTEUR = ("", "")
-    if voulue.lower() in ("aucune", "non", "0"):
-        return _MOTEUR
-    voulue = "" if voulue.lower() == "auto" else voulue
-    if platform.system() == "Windows":
-        try:
-            r = _executer(_commande_sapi(voulue=voulue), delai=60)
-            if r.returncode == 0 and r.stdout.strip():
-                _MOTEUR = ("sapi", r.stdout.strip().splitlines()[-1])
-        except (OSError, subprocess.SubprocessError):
-            pass
-    elif shutil.which("espeak-ng"):
-        _MOTEUR = ("espeak-ng", voulue or "fr")
-    return _MOTEUR
-
-
-def synthetiser(texte: str, sortie: Path) -> bool:
-    moteur, voix = moteur_voix()
-    if not moteur:
-        return False
+def _fichier_texte(texte: str) -> str:
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
         f.write(texte)
-        source = f.name
+        return f.name
+
+
+def _sapi(texte: str, sortie: Path, voix: str) -> bool:
+    source = _fichier_texte(texte)
     try:
-        if moteur == "sapi":
-            voulue = config.secret("DOCUMENTATION_VOIX")
-            r = _executer(_commande_sapi(source, str(sortie), "" if voulue.lower() in ("", "auto") else voulue))
-        else:
-            r = _executer(["espeak-ng", "-v", voix, "-s", "155", "-w", str(sortie), "-f", source])
-        return r.returncode == 0 and sortie.exists() and sortie.stat().st_size > 1000
-    except (OSError, subprocess.SubprocessError):
-        return False
+        return _executer(_commande_sapi(source, str(sortie), voix)).returncode == 0
     finally:
         os.unlink(source)
+
+
+def _espeak(texte: str, sortie: Path, voix: str) -> bool:
+    source = _fichier_texte(texte)
+    try:
+        return _executer(["espeak-ng", "-v", voix or "fr", "-s", "155", "-w", str(sortie), "-f", source]).returncode == 0
+    finally:
+        os.unlink(source)
+
+
+# -- Choix du moteur --------------------------------------------------------------------------------------
+
+def _disponible(moteur: str, nom: str, journal) -> tuple | None:
+    """(moteur, voix) si ce moteur peut parler français sur ce poste, sinon None."""
+    global _DERNIERE_ERREUR
+    try:
+        if moteur == "piper":
+            import piper  # noqa: F401
+            if nom and not nom.startswith("fr_") and not config.secret("DOCUMENTATION_VOIX_MODELE"):
+                nom = ""
+            modele = modele_piper(nom, journal=journal)
+            return ("piper", modele.stem) if modele else None
+        if moteur == "edge":
+            import edge_tts  # noqa: F401
+            voix = nom if nom.endswith("Neural") else EDGE_DEFAUT
+            essai = Path(tempfile.gettempdir()) / "odatio_essai_edge.wav"
+            if _edge("Bonjour.", essai, voix):   # le service en ligne répond-il ?
+                essai.unlink(missing_ok=True)
+                return ("edge", voix)
+            _DERNIERE_ERREUR = "le service de voix en ligne de Microsoft est injoignable."
+            return None
+        if moteur == "windows" and platform.system() == "Windows":
+            r = _executer(_commande_sapi(voulue=nom if not nom.startswith(("fr_", "fr-")) else ""), delai=60)
+            if r.returncode == 0 and r.stdout.strip():
+                return ("windows", r.stdout.strip().splitlines()[-1])
+        if moteur == "espeak" and shutil.which("espeak-ng"):
+            return ("espeak", "fr")
+    except ImportError:
+        _DERNIERE_ERREUR = {"piper": "le paquet piper-tts n'est pas installé (pip install piper-tts).",
+                            "edge": "le paquet edge-tts n'est pas installé (pip install edge-tts)."}.get(moteur, "")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def moteur_voix(journal=lambda m: None) -> tuple:
+    """(moteur, voix) retenus selon DOCUMENTATION_VOIX, ou ("", "") pour une vidéo muette."""
+    demande, nom = _reglage()
+    if (demande, nom) in _MOTEUR:
+        return _MOTEUR[(demande, nom)]
+    choix = ("", "")
+    if demande != "aucune":
+        ordre = ["piper", "windows", "espeak"] if demande == "auto" else [demande, "piper", "windows", "espeak"]
+        for moteur in dict.fromkeys(ordre):
+            trouve = _disponible(moteur, nom if moteur == demande or demande == "auto" else "", journal)
+            if trouve:
+                choix = trouve
+                break
+            if moteur == demande:
+                journal(f"Voix « {demande} » indisponible : {_DERNIERE_ERREUR or 'non installée sur ce poste.'} "
+                        f"Repli sur une autre voix.")
+    _MOTEUR[(demande, nom)] = choix
+    return choix
+
+
+def oublier_moteur() -> None:
+    """À appeler quand le réglage de la voix change (écran de configuration)."""
+    _MOTEUR.clear()
+
+
+def synthetiser(texte: str, sortie: Path, moteur: tuple | None = None) -> bool:
+    """Écrit la narration dans un fichier WAV avec le moteur retenu ; False si la synthèse échoue."""
+    moteur, voix = moteur or moteur_voix()
+    if not moteur:
+        return False
+    try:
+        if moteur == "piper":
+            ok = _piper(texte, sortie, modele_piper(voix, telecharger=False) or Path(""))
+        elif moteur == "edge":
+            ok = _edge(texte, sortie, voix)
+        elif moteur == "windows":
+            ok = _sapi(texte, sortie, voix) or _sapi(texte, sortie, "")
+        else:
+            ok = _espeak(texte, sortie, voix)
+        return bool(ok) and sortie.exists() and sortie.stat().st_size > 1000
+    except Exception:  # modèle illisible, service en ligne indisponible…
+        return False
+
+
+def essai_voix(sortie: Path, journal=lambda m: None) -> tuple:
+    """Synthétise une phrase d'essai : (ok, description de la voix ou de l'échec)."""
+    oublier_moteur()
+    moteur = moteur_voix(journal)
+    if not moteur[0]:
+        return False, _DERNIERE_ERREUR or "Aucune voix française disponible sur ce poste."
+    if not synthetiser(ESSAI, sortie, moteur):
+        return False, f"La voix {moteur[1]} ({moteur[0]}) n'a pas pu parler."
+    return True, f"{moteur[1]} ({moteur[0]})"
 
 
 def _duree_wav(chemin: Path) -> float:
@@ -343,8 +554,8 @@ def produire(document: dict, dossier: Path, sortie: Path, sujet: str = "", journ
     ffmpeg = _ffmpeg()
     sujet = sujet or document.get("titre", "")
     suite = sequences(document)
-    moteur, voix = moteur_voix()
-    journal(f"Voix : {voix}." if moteur else "Aucune voix française disponible : vidéo muette, narration en "
+    moteur, voix = moteur_voix(journal)
+    journal(f"Voix : {voix} ({moteur})." if moteur else "Aucune voix française disponible : vidéo muette, narration en "
                                              "sous-titres.")
     travail = Path(dossier) / "_rendu"
     if travail.exists():
@@ -356,7 +567,7 @@ def produire(document: dict, dossier: Path, sortie: Path, sujet: str = "", journ
             journal(f"Diapositive {i}/{len(suite)} : {seq['titre'][:60]}")
             morceaux = _morceaux(seq["narration"])
             audio = travail / f"{i:02d}.wav"
-            if moteur and synthetiser(seq["narration"], audio):
+            if moteur and synthetiser(seq["narration"], audio, (moteur, voix)):
                 duree = _duree_wav(audio) + PAUSE
                 image = travail / f"{i:02d}.png"
                 diapositive(seq, i, len(suite), sujet, dossier).save(image)

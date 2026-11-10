@@ -29,6 +29,16 @@ def resumer(nom: str, entree: dict, racines: list) -> str:
         return f"Prépare une documentation : {entree.get('sujet', '')}".rstrip(" :")
     if nom_court == "documentation_enregistrer":
         return f"Enregistre la documentation ({len(entree.get('scenes') or [])} scènes)"
+    if nom_court == "ecran_ouvrir":
+        return f"Application : ouvre {entree.get('adresse') or 'la page d’accueil'}"
+    if nom_court == "ecran_observer":
+        return "Application : relit l'écran"
+    if nom_court == "ecran_cliquer":
+        return f"Application : clique sur « {entree.get('libelle', '')} »"
+    if nom_court == "ecran_saisir":
+        return f"Application : saisit « {entree.get('valeur', '')} » dans {entree.get('champ', '')}"
+    if nom_court == "ecran_capturer":
+        return f"Application : capture l'écran ({entree.get('nom', '')})"
     if nom_court.startswith("bitbucket_"):
         depot = entree.get("depot", "") or entree.get("projet", "")
         branche = f" @ {entree['branche']}" if entree.get("branche") else ""

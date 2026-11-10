@@ -57,6 +57,15 @@ class Base:
 
 
 @dataclass
+class Application:
+    """L'application web du profil, où l'agent peut naviguer pour prendre des captures d'écran."""
+    url: str = ""                 # ex. http://localhost:8888/
+    utilisateur: str = ""         # compte applicatif (un compte de test, aux droits réduits)
+    mot_de_passe_env: str = ""
+    actions: bool = False         # False : navigation seule (les clics qui valident ou enregistrent sont refusés)
+
+
+@dataclass
 class Profil:
     nom: str
     description: str = ""
@@ -67,6 +76,7 @@ class Profil:
     fichiers_interdits: list = field(default_factory=list)
     dossier_fichiers: str = ""     # fichiers d'interface générés ; vide = .cache/fichiers/<profil>
     donnees_reelles: bool = False  # garder noms, adresses… dans les fichiers générés (base de test seulement)
+    application: Application | None = None
 
 
 @dataclass
@@ -119,6 +129,11 @@ def enregistrer_secrets(valeurs: dict) -> None:
             if nom in dotenv_values(FICHIER_SECRETS):
                 unset_key(str(FICHIER_SECRETS), nom)
             _SECRETS.pop(nom, None)
+
+
+def nom_mot_de_passe_application(profil: str) -> str:
+    """Nom de la variable du .env qui porte le mot de passe du compte applicatif d'un profil."""
+    return "APP_PASSWORD_" + re.sub(r"[^A-Z0-9]+", "_", profil.upper()).strip("_")
 
 
 def nom_mot_de_passe(profil: str) -> str:
@@ -220,7 +235,15 @@ def _profil(nom: str, brut: dict, interdits_par_defaut: bool) -> Profil:
             raise ConfigError(f"Profil « {nom} », base : « type » est obligatoire (postgresql, oracle, "
                               f"sqlserver, mysql).")
 
+    application = None
+    if str(brut.get("application", {}).get("url", "")).strip():
+        a = brut["application"]
+        application = Application(url=str(a.get("url", "")).strip(), utilisateur=str(a.get("utilisateur", "")).strip(),
+                                  mot_de_passe_env=str(a.get("mot_de_passe_env", "")).strip(),
+                                  actions=bool(a.get("actions", False)))
+
     return Profil(nom=nom, description=str(brut.get("description", "")).strip(), sources=sources,
+                  application=application,
                   dossiers_logs=[str(d) for d in logs.get("dossiers", [])],
                   groundcover_filtre=str(logs.get("groundcover_filtre", "")).strip(), base=base,
                   fichiers_interdits=(INTERDITS_PAR_DEFAUT if interdits_par_defaut else [])
@@ -297,6 +320,8 @@ def enregistrer(reglages_agent: Reglages, profils: list) -> None:
             brut["base"] = {k: v for k, v in asdict(p.base).items() if v}
         if p.dossier_fichiers or p.donnees_reelles:
             brut["fichiers"] = {"dossier": p.dossier_fichiers, "donnees_reelles": p.donnees_reelles}
+        if p.application and p.application.url:
+            brut["application"] = {k: v for k, v in asdict(p.application).items() if v}
         donnees["profils"][p.nom] = brut
 
     if FICHIER_PROFILS.exists():

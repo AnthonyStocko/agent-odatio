@@ -23,7 +23,7 @@ from tools.secret_tools import mask_secrets, remaining_secrets
 
 from . import config
 
-SCENES_MIN, SCENES_MAX = 3, 12
+SCENES_MIN, SCENES_MAX = 3, 16
 NARRATION_MAX = 900          # caractères d'une narration (environ 40 secondes)
 POINTS_MAX, POINT_MAX = 6, 220
 EXTENSIONS_CAPTURES = {".png", ".jpg", ".jpeg", ".webp"}

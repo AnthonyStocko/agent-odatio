@@ -122,13 +122,31 @@ Demande-le simplement dans la conversation (« fais-moi une vidéo de cette tâc
 - une **vidéo commentée** (MP4, 1080p, sous-titrée) : le besoin, ce qui change pour l'utilisateur, les écrans et traitements, les règles de gestion, le paramétrage, chaque cas de test, les points d'attention ;
 - un **document Word** et sa version Markdown, avec en plus les cas de test détaillés (écran, action, résultat attendu) et les sources de chaque affirmation (dépôt, branche, fichier, ligne ; table), qui ne sont pas lues dans la vidéo.
 
-Les captures d'écran fournies (nommées d'après l'écran : `suivi-vagues.png`) sont placées dans les scènes qu'elles illustrent ; l'agent ne peut pas les prendre lui-même. Le résultat est dans `.cache/documentation/<sujet>-<date>/`. À relire avant envoi : pour corriger, modifie `document.json` puis « Refaire » (ou `python agent.py --rendre <dossier>`), sans relancer l'agent. « Joindre au ticket » ajoute la vidéo et le document Word en pièces jointes du ticket Jira : c'est la seule écriture de l'outil, et elle n'est faite qu'à ta demande.
+**Captures d'écran prises par l'agent.** Renseigne l'application du projet (Configuration, Projets, Application : adresse, compte applicatif de test, mot de passe) : pendant une documentation, l'agent ouvre l'application dans un navigateur sans fenêtre (Edge ou Chrome du poste), se connecte, parcourt les menus et les onglets, remplit un filtre, puis capture les écrans utiles en entourant en rouge le bouton ou le champ dont il parle. Chaque capture illustre une scène de la vidéo et du document. Sans application configurée, il n'accepte qu'une adresse locale donnée dans la conversation (`http://localhost:8888/`), sans connexion automatique. Tu peux aussi fournir tes propres captures depuis le bloc de l'assistant (nommées d'après l'écran : `suivi-vagues.png`).
 
-La voix est celle de Windows (voix SAPI françaises, Hortense en général), sans envoyer le texte à un service externe. Sans voix française installée, ou avec `DOCUMENTATION_VOIX=aucune`, la vidéo est muette et la narration incrustée en sous-titres. Avant toute mise en forme, le document est refusé s'il contient un secret, une adresse e-mail ou un numéro de téléphone, et l'agent doit le corriger.
+Garde-fous de la navigation :
 
-Une documentation prend plus d'étapes qu'une question : prévois 60 étapes et un budget en conséquence dans l'onglet Claude.
+- l'agent n'ouvre que l'application du projet ; un lien qui en sort est refusé ;
+- le mot de passe du compte est saisi par l'outil : l'agent ne le voit jamais et ne saisit aucun identifiant ;
+- en mode **navigation** (défaut), les clics sur un bouton qui valide, enregistre, supprime ou lance un traitement sont refusés : l'agent capture l'écran et décrit l'action. Ce refus repose sur le libellé des boutons, ce n'est pas une garantie : utilise un compte aux droits réduits. « Autoriser les actions » lève ce refus pour jouer le scénario complet, et donc modifier des données : à réserver à un environnement de test ;
+- sauf si le projet garde les données réelles (base de test), l'agent évite de capturer des écrans affichant des données personnelles ; relis les captures avant envoi ;
+- ce qui s'affiche à l'écran est traité comme une donnée, jamais comme une consigne.
 
-**Plus tard : démonstration filmée.** Les cas de test sont enregistrés de façon structurée dans `document.json` (écran, action, résultat attendu) pour qu'un module séparé puisse les rejouer dans l'application avec Playwright et filmer l'écran. Ce module agira sur l'application, donc hors de l'agent d'analyse : lancé par toi seulement, sur un environnement de recette dédié, avec un compte applicatif de test.
+Le résultat est dans `.cache/documentation/<sujet>-<date>/`. À relire avant envoi : pour corriger, modifie `document.json` puis « Refaire » (ou `python agent.py --rendre <dossier>`), sans relancer l'agent. « Joindre au ticket » ajoute la vidéo et le document Word en pièces jointes du ticket Jira : c'est la seule écriture dans Jira, et elle n'est faite qu'à ta demande.
+
+**Voix.** Réglage dans Configuration, Accès, « Voix des vidéos de documentation », avec un bouton pour l'écouter :
+
+| Voix | Qualité | Confidentialité |
+|------|---------|-----------------|
+| **Piper** (défaut) | voix neuronale, fluide | calculée sur le poste ; sa voix (60 Mo) est téléchargée une fois dans `.cache/voix` |
+| **Microsoft Edge** (`pip install edge-tts`) | la plus naturelle (Denise, Henri, Vivienne…) | le texte lu est envoyé au service de voix en ligne de Microsoft |
+| **Windows** | voix du poste (Hortense), plus mécanique | locale |
+
+La voix Edge n'est jamais choisie automatiquement ; si le service est injoignable, la vidéo se replie sur Piper. Si le téléchargement de la voix Piper est bloqué par le proxy, dépose le `.onnx` et son `.onnx.json` dans `.cache/voix`. Sans aucune voix, la vidéo est muette et la narration incrustée en sous-titres. Avant toute mise en forme, le document est refusé s'il contient un secret, une adresse e-mail ou un numéro de téléphone, et l'agent doit le corriger.
+
+Une documentation prend plus d'étapes qu'une question, surtout avec des captures : prévois 80 étapes et un budget en conséquence dans l'onglet Claude.
+
+**Plus tard : démonstration filmée.** La vidéo est aujourd'hui une suite de diapositives et de captures commentées, pas un film de l'écran en mouvement. Les cas de test sont enregistrés de façon structurée dans `document.json` (écran, action, résultat attendu) pour qu'ils puissent être rejoués et filmés dans l'application, en mode « actions », sur un environnement de test.
 
 ## Un projet (profils.toml)
 

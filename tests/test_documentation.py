@@ -1,8 +1,9 @@
 """Tests de la documentation pour le consultant (odatio_agent.documentation, outils de la session)."""
 import asyncio
 import copy
+from unittest import mock
 
-from odatio_agent import config, consignes, documentation, video
+from odatio_agent import config, consignes, documentation, ecran, video
 from odatio_agent.session import Session
 
 from .outillage import AvecDossierTemporaire
@@ -96,7 +97,8 @@ class TestOutilsDeSession(AvecDossierTemporaire):
     def test_parcours_depuis_la_conversation(self):
         session = self.session(ticket={"cle": "ODA-1234", "titre": "Libération", "texte": ""})
         outils = _outils(session)
-        marche = asyncio.run(outils["documentation_demarrer"]({"sujet": "libération des vagues"}))
+        with mock.patch.object(ecran, "disponible", return_value=False):
+            marche = asyncio.run(outils["documentation_demarrer"]({"sujet": "libération des vagues"}))
         self.assertIn("documentation_enregistrer", marche["content"][0]["text"])
         self.assertIn("aucune capture", marche["content"][0]["text"])
         dossier = session.dossier_documentation

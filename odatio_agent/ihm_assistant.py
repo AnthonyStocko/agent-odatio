@@ -218,7 +218,8 @@ def _bloc_documentation(profil) -> None:
         st.caption("L'agent enquête comme pour une question (en repartant de la conversation en cours), puis rédige "
                    "un document et une vidéo commentée : besoin, écrans, règles de gestion, paramétrage, cas de test. "
                    "Tu peux aussi le demander directement dans la conversation (« fais-moi une vidéo de cette "
-                   "tâche ») ; passe par ce formulaire pour y joindre des captures d'écran.")
+                   "tâche »). Si l'application du projet est renseignée dans la configuration, l'agent y prend "
+                   "lui-même les captures d'écran ; ce formulaire sert à joindre les tiennes.")
         with st.form("formulaire-documentation", border=False):
             sujet = st.text_input("Fonctionnalité à documenter", value="" if etat.ticket else "",
                                   placeholder=(f"La tâche {etat.ticket['cle']} (ou précise un angle)" if etat.ticket

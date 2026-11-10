@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import dotenv_values
 
-from . import bitbucket, comptes_claude, config, outils, sources
+from . import bitbucket, comptes_claude, config, ecran, outils, sources, video
 
 NOUVEAU = "Nouveau projet…"
 TYPES_BASE = ["", "postgresql", "oracle", "sqlserver", "mysql"]
@@ -129,10 +129,33 @@ def _onglet_projets() -> None:
             help="Décoché : noms, adresses, e-mails et téléphones de personnes sont remplacés par des valeurs "
                  "fictives (les codes client, article, site… sont gardés). À cocher seulement sur une base de test.")
 
+        st.markdown("**Application** (pour les captures d'écran des documentations)")
+        appli = p.application or config.Application()
+        mot_de_passe_appli_connu = bool(appli.mot_de_passe_env and config.secret(appli.mot_de_passe_env))
+        url_appli = st.text_input("Adresse de l'application", value=appli.url, placeholder="http://localhost:8888/",
+                                  help="L'agent n'ouvre que cette application. Vide : il n'accepte qu'une adresse "
+                                       "locale (localhost) donnée dans la conversation, sans connexion automatique.")
+        c1, c2 = st.columns(2)
+        utilisateur_appli = c1.text_input("Compte applicatif", value=appli.utilisateur,
+                                          help="Un compte de test aux droits réduits. L'outil le saisit lui-même "
+                                               "sur l'écran de connexion : l'agent ne voit jamais le mot de passe.")
+        mot_de_passe_appli = c2.text_input("Mot de passe du compte", type="password",
+                                           placeholder="inchangé" if mot_de_passe_appli_connu else "",
+                                           help="Enregistré dans le .env. Laisse vide pour garder l'actuel.")
+        actions_appli = st.checkbox(
+            "Autoriser les actions dans l'application (environnement de test uniquement)", value=appli.actions,
+            help="Décoché : l'agent navigue (menus, onglets, filtres) et refuse les clics qui valident, enregistrent, "
+                 "suppriment ou lancent un traitement. Ce refus repose sur le libellé des boutons : ce n'est pas "
+                 "une garantie, d'où l'intérêt d'un compte aux droits réduits. Coché : il peut jouer le scénario "
+                 "complet, et donc modifier des données.")
+
         c1, c2, _ = st.columns([1, 1, 2])
         enregistrer = c1.form_submit_button("Enregistrer", type="primary", width="stretch")
         tester = c2.form_submit_button("Enregistrer et tester", width="stretch")
 
+    if url_appli.strip() and not ecran.disponible():
+        st.warning("La navigation dans l'application demande Playwright. Dans PowerShell : "
+                   "`venv\\Scripts\\python.exe -m pip install playwright`, puis relance l'IHM.")
     if type_base and _pilote_manquant(type_base):
         st.warning(f"Le pilote {type_base} n'est pas installé. Dans PowerShell : "
                    f"`venv\\Scripts\\python.exe -m pip install {_pilote_manquant(type_base)}`, puis relance l'IHM.")
@@ -177,7 +200,18 @@ def _onglet_projets() -> None:
                 config.enregistrer_secrets({variable: config.secret(existant.base.mot_de_passe_env)})
             nouvelle_base = config.Base(type=type_base, hote=hote.strip(), port=port.strip(), nom=nom_base.strip(),
                                         utilisateur=utilisateur.strip(), schema=schema.strip(), mot_de_passe_env=variable)
+        nouvelle_application = None
+        if url_appli.strip():
+            adresse = url_appli.strip() if "://" in url_appli else "http://" + url_appli.strip()
+            variable_appli = config.nom_mot_de_passe_application(nom)
+            if mot_de_passe_appli:
+                config.enregistrer_secrets({variable_appli: mot_de_passe_appli})
+            elif appli.mot_de_passe_env and appli.mot_de_passe_env != variable_appli:
+                config.enregistrer_secrets({variable_appli: config.secret(appli.mot_de_passe_env)})
+            nouvelle_application = config.Application(url=adresse, utilisateur=utilisateur_appli.strip(),
+                                                      mot_de_passe_env=variable_appli, actions=actions_appli)
         nouveau = config.Profil(nom=nom, description=description.strip(), sources=liste_sources,
+                                application=nouvelle_application,
                                 dossiers_logs=_lignes(dossiers_logs), groundcover_filtre=groundcover.strip(),
                                 base=nouvelle_base, fichiers_interdits=_lignes(interdits),
                                 dossier_fichiers=dossier_fichiers.strip(), donnees_reelles=donnees_reelles)
@@ -208,6 +242,8 @@ def _onglet_projets() -> None:
                     resultats.append(("Logs", ok, f"{d} {'trouvé' if ok else 'introuvable'}"))
                 resultats.append(("Fichiers générés", True, str(config.dossier_fichiers(profil))))
                 resultats += outils.tester(profil)
+                if profil.application and ecran.disponible():
+                    resultats.append(("Application",) + ecran.tester(profil))
         etat.resultats_test = resultats
         st.rerun()
 
@@ -378,6 +414,39 @@ def _onglet_acces() -> None:
             (st.success if ok else st.error)(f"Bitbucket : {message}")
         else:
             st.success("Accès Bitbucket enregistrés.")
+
+    with st.form("voix"):
+        st.markdown("**Voix des vidéos de documentation**")
+        moteur_actuel, nom_actuel = video._reglage()
+        libelles = {"auto": "Automatique (Piper si installé, sinon Windows)",
+                    "piper": "Piper : voix neuronale, calculée sur ce poste",
+                    "edge": "Microsoft Edge : la plus naturelle, en ligne",
+                    "windows": "Windows : voix installées sur le poste (Hortense…)",
+                    "espeak": "espeak-ng (Linux)", "aucune": "Aucune : vidéo muette sous-titrée"}
+        c1, c2 = st.columns(2)
+        moteur = c1.selectbox("Voix", video.MOTEURS, index=video.MOTEURS.index(moteur_actuel),
+                              format_func=lambda m: libelles[m])
+        nom_voix = c2.text_input("Nom de la voix (facultatif)", value=nom_actuel,
+                                 placeholder=f"{video.PIPER_DEFAUT} ou {video.EDGE_DEFAUT}",
+                                 help="Piper : " + ", ".join(video.VOIX_PIPER) + ". Edge : " + ", ".join(video.VOIX_EDGE)
+                                      + ". Windows : une partie du nom (Hortense).")
+        st.caption("Piper : rien ne sort du poste ; sa voix (60 Mo) est téléchargée une fois. Microsoft Edge : le "
+                   "texte lu (la narration, sans secret ni donnée nominative) est envoyé au service de voix en "
+                   "ligne de Microsoft ; à ne choisir que si c'est acceptable pour toi.")
+        if st.form_submit_button("Enregistrer et écouter", type="primary"):
+            config.enregistrer_secrets({"DOCUMENTATION_VOIX": moteur, "DOCUMENTATION_VOIX_NOM": nom_voix.strip()})
+            with st.spinner("Synthèse d'un essai…"):
+                essai = config.CACHE / "voix" / "essai.wav"
+                essai.parent.mkdir(parents=True, exist_ok=True)
+                messages = []
+                ok, description = video.essai_voix(essai, journal=messages.append)
+            for message in messages:
+                st.info(message)
+            if ok:
+                st.success(f"Voix : {description}")
+                st.audio(essai.read_bytes(), format="audio/wav")
+            else:
+                st.error(description)
 
     with st.form("groundcover"):
         st.markdown("**groundcover**")

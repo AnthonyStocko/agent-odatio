@@ -15,7 +15,7 @@ from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKCli
 
 from pathlib import Path
 
-from . import bitbucket, config, consignes, documentation, fichiers, outils
+from . import bitbucket, config, consignes, documentation, ecran, fichiers, outils
 from .garde import creer_garde
 
 SERVEUR = "odatio"
@@ -38,6 +38,10 @@ def _texte(texte: str, erreur: bool = False) -> dict:
     return {"content": [{"type": "text", "text": texte}], "is_error": erreur}
 
 
+async def _vers_texte(coroutine) -> dict:
+    return _texte(await coroutine)
+
+
 class Session:
     def __init__(self, profil: config.Profil, sources: list, logs: list, reglages: config.Reglages,
                  utilisateur: str = "", reprise: str = "", ticket: dict | None = None,
@@ -52,6 +56,7 @@ class Session:
         self.dossier_documentation = self.dossier_fourni
         self.documentation_ouverte = False
         self.document = None   # document accepté par documentation_enregistrer
+        self.navigateur = None  # ecran.Navigateur, démarré à la première capture
         racines = [chemin for _, chemin in sources] + list(logs)
         sortie = config.dossier_fichiers(profil)
         sortie.mkdir(parents=True, exist_ok=True)
@@ -151,6 +156,8 @@ class Session:
         if bitbucket.configure(profil):
             liste += self._outils_bitbucket(executer)
         liste += self._outils_documentation()
+        if ecran.disponible():
+            liste += self._outils_ecran()
         liste += self._outils_fichiers()
         return liste
 
@@ -216,7 +223,8 @@ class Session:
             self.documentation_ouverte = True
             outils.journal(self.profil, "documentation_demarrer", {"sujet": sujet[:200]})
             return _texte(consignes.documentation(documentation.captures(self.dossier_documentation),
-                                                  self.plafond_base()))
+                                                  self.plafond_base(), ecran.decrire(self.profil),
+                                                  self.profil.donnees_reelles))
 
         @tool("documentation_enregistrer", "Enregistre la documentation fonctionnelle (document + scénario de la "
               "vidéo) destinée au consultant, après documentation_demarrer et une fois l'enquête terminée. La "
@@ -239,12 +247,87 @@ class Session:
 
         return [documentation_demarrer, documentation_enregistrer]
 
+    def _outils_ecran(self) -> list:
+        """Navigation dans l'application pour les captures d'écran d'une documentation (ecran.py)."""
+
+        async def jouer(outil: str, details: dict, action) -> dict:
+            if not self.documentation_ouverte or self.dossier_documentation is None:
+                return _texte("La navigation dans l'application sert aux captures d'une documentation : appelle "
+                              "d'abord documentation_demarrer.", True)
+            if self.navigateur is None:
+                self.navigateur = ecran.Navigateur(self.profil)
+            try:
+                resultat = await action(self.navigateur)
+            except ecran.EcranErreur as e:
+                outils.journal(self.profil, outil, details, str(e)[:300])
+                return _texte(f"ERREUR : {e}", True)
+            except Exception as e:  # incident du navigateur
+                message = f"{type(e).__name__} : {str(e).splitlines()[0][:200] if str(e) else ''}"
+                outils.journal(self.profil, outil, details, message)
+                return _texte(f"ERREUR : {message}", True)
+            outils.journal(self.profil, outil, details)
+            return resultat
+
+        def schema(proprietes: dict, requis: list) -> dict:
+            return {"type": "object", "properties": proprietes, "required": requis}
+
+        texte = {"type": "string"}
+
+        @tool("ecran_ouvrir", "Application : ouvre une page de l'application du projet (adresse complète ou chemin "
+              "relatif ; vide = page d'accueil) et renvoie ce qui s'affiche. La connexion est faite par l'outil.",
+              schema({"adresse": texte}, []))
+        async def ecran_ouvrir(args):
+            adresse = str(args.get("adresse", ""))
+            return await jouer("ecran_ouvrir", {"adresse": adresse[:200]},
+                               lambda n: _vers_texte(n.ouvrir(adresse)))
+
+        @tool("ecran_observer", "Application : relit l'écran affiché (titre, adresse, éléments avec leur rôle et "
+              "leur libellé exact).", schema({}, []))
+        async def ecran_observer(args):
+            return await jouer("ecran_observer", {}, lambda n: _vers_texte(n.observer()))
+
+        @tool("ecran_cliquer", "Application : clique sur un menu, un onglet, un lien, un bouton ou une ligne, "
+              "désigné par son libellé exact, et renvoie le nouvel écran. En mode navigation, les libellés qui "
+              "valident, enregistrent, suppriment ou lancent un traitement sont refusés.",
+              schema({"libelle": texte}, ["libelle"]))
+        async def ecran_cliquer(args):
+            return await jouer("ecran_cliquer", {"libelle": str(args["libelle"])[:100]},
+                               lambda n: _vers_texte(n.cliquer(args["libelle"])))
+
+        @tool("ecran_saisir", "Application : remplit un champ (filtre, recherche) désigné par son libellé ; "
+              "'entree' appuie sur Entrée pour lancer la recherche. Jamais de mot de passe.",
+              schema({"champ": texte, "valeur": texte, "entree": {"type": "boolean"}}, ["champ", "valeur"]))
+        async def ecran_saisir(args):
+            return await jouer("ecran_saisir", {"champ": str(args["champ"])[:100]},
+                               lambda n: _vers_texte(n.saisir(args["champ"], args["valeur"],
+                                                              bool(args.get("entree")))))
+
+        @tool("ecran_capturer", "Application : capture l'écran affiché pour la documentation et renvoie le nom du "
+              "fichier (à mettre dans le champ capture de la scène) avec un aperçu. 'surligner' entoure en rouge "
+              "l'élément dont on parle (libellé exact) ; 'pleine_page' capture toute la hauteur de la page.",
+              schema({"nom": {"type": "string", "description": "nom parlant, ex. suivi-vagues-bouton-liberer"},
+                      "surligner": texte, "pleine_page": {"type": "boolean"}}, ["nom"]))
+        async def ecran_capturer(args):
+            async def capturer(n):
+                nom, apercu = await n.capturer(self.dossier_documentation, args["nom"],
+                                               str(args.get("surligner") or ""), bool(args.get("pleine_page")))
+                return {"content": [{"type": "text", "text": f"Capture enregistrée : {nom}. Mets ce nom dans le "
+                                                             f"champ capture de la scène qu'elle illustre."},
+                                    {"type": "image", "data": apercu, "mimeType": "image/jpeg"}],
+                        "is_error": False}
+            return await jouer("ecran_capturer", {"capture": str(args["nom"])[:100]}, capturer)
+
+        return [ecran_ouvrir, ecran_observer, ecran_cliquer, ecran_saisir, ecran_capturer]
+
     # -- Conversation -------------------------------------------------------------------------------
 
     async def ouvrir(self) -> None:
         await self.client.connect()
 
     async def fermer(self) -> None:
+        if self.navigateur is not None:
+            await self.navigateur.fermer()
+            self.navigateur = None
         await self.client.disconnect()
 
     async def demander(self, question: str, sur_texte, sur_outil) -> Bilan:
