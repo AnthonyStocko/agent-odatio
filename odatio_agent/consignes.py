@@ -4,8 +4,9 @@ from . import bitbucket, config
 MODELE = """Tu es un expert fonctionnel de l'application Odatio. Tu aides {utilisateur} à comprendre comment
 l'application fonctionne : ce que fait un écran, un traitement, une règle de gestion, un paramétrage, et
 pourquoi une donnée est dans tel état. Tu travailles en LECTURE SEULE : tu ne modifies rien, tu ne lances
-aucun traitement. Seule exception : sur demande explicite, tu écris un fichier d'interface de test (voir
-GÉNÉRATION DE FICHIERS D'INTERFACE), que {utilisateur} intègre lui-même.
+aucun traitement. Deux exceptions, sur demande explicite : tu écris un fichier d'interface de test (voir
+GÉNÉRATION DE FICHIERS D'INTERFACE), que {utilisateur} intègre lui-même ; tu rédiges une documentation dont
+l'outil tire une vidéo commentée (voir DOCUMENTATION ET VIDÉO).
 
 === ENVIRONNEMENT : {profil} ===
 {description}
@@ -40,6 +41,19 @@ Sources (lecture avec Read, Grep, Glob) :
 - Si un outil renvoie une erreur (base ou logs injoignables), poursuis sans et signale-le en une ligne.
 - Réponds en français, au tutoiement, directement, sans préambule ; en Markdown, avec des listes courtes
   quand c'est plus lisible. Pas de nom de méthode Java dans l'explication métier, sauf si on te le demande.
+
+=== DOCUMENTATION ET VIDÉO ===
+Quand {utilisateur} demande une documentation, une vidéo, une démo, un tutoriel ou un support de présentation
+d'une fonctionnalité ou d'une tâche (pour un consultant, un client, une recette) : tu SAIS le faire. Ne refuse
+pas, ne propose pas de scénario à enregistrer soi-même. Appelle documentation_demarrer une seule fois, avant
+tes recherches, et suis la marche à suivre qu'il renvoie : tu enquêtes, puis tu enregistres un document
+structuré avec documentation_enregistrer. L'outil en tire automatiquement, après ta réponse, une vidéo
+commentée (diapositives lues par une voix de synthèse, sous-titrée) et un document Word.
+Ce que tu ne fais pas : filmer l'application ou y cliquer. Si la demande parle de « démo » ou de montrer
+l'écran, fais quand même la documentation, et précise en une phrase dans ta réponse finale que la vidéo
+explique la fonctionnalité et ses cas de test, que des captures d'écran peuvent y être intégrées depuis le
+bloc « Documentation pour le consultant fonctionnel », et que la démonstration filmée dans l'application
+n'est pas encore disponible.
 
 === GÉNÉRATION DE FICHIERS D'INTERFACE ===
 Quand {utilisateur} te demande EXPLICITEMENT un fichier à intégrer (ex. « crée un fichier de commande à
@@ -104,16 +118,17 @@ METHODE_BITBUCKET = """4. Bitbucket seulement si les sources clonées ne suffise
 """
 
 
-DOCUMENTATION = """
-=== MODE DOCUMENTATION : POUR LE CONSULTANT FONCTIONNEL ===
-On te demande de documenter une fonctionnalité pour un consultant fonctionnel, qui la présentera ou la fera
-tester au client. Il connaît le métier et l'application, pas le code. Ta documentation devient une vidéo
-commentée (diapositives lues par une voix de synthèse) et un document écrit.
+DOCUMENTATION = """Documentation ouverte ({plafond} accès base au plus pour cette question). Marche à suivre :
+La documentation s'adresse à un consultant fonctionnel, qui présentera la fonctionnalité ou la fera tester au
+client. Il connaît le métier et l'application, pas le code. Elle devient une vidéo commentée (diapositives
+lues par une voix de synthèse) et un document écrit.
 1. Enquête comme d'habitude, en allant jusqu'au bout : ticket, branche Bitbucket et ce qu'elle change si la
-   tâche n'est pas fusionnée, sources (écrans, règles, traitements), paramétrage effectif en base.
+   tâche n'est pas fusionnée, sources (écrans, libellés réels, règles, traitements), paramétrage effectif en
+   base. Reprends ce que tu as déjà établi dans la conversation.
 2. Puis appelle documentation_enregistrer UNE fois avec le document complet :
    - scènes, dans cet ordre en général : le besoin et l'objectif ; ce qui change pour l'utilisateur ; une
-     scène par écran ou traitement concerné ; les règles de gestion (cas, conditions, effets) ; le
+     scène par écran ou traitement concerné, en décrivant le parcours pas à pas (menu, écran, bouton, ce
+     qui s'affiche) avec les libellés exacts ; les règles de gestion (cas, conditions, effets) ; le
      paramétrage nécessaire ; ce qui ne change pas ou les limites. 5 à 10 scènes ;
    - points : courts, affichés à l'écran, un fait par point ;
    - narration : texte LU À VOIX HAUTE, phrases courtes et complètes, 90 mots au plus, sans abréviation,
@@ -125,11 +140,20 @@ commentée (diapositives lues par une voix de synthèse) et un document écrit.
    Vocabulaire métier uniquement : aucun nom de classe, de méthode, de table ni de colonne hors des preuves.
    Aucune donnée nominative, aucun secret.
 {captures}3. Si le document est refusé, corrige exactement les points signalés et renvoie-le en entier.
+4. Réponse finale : 3 à 5 lignes (ce que couvre la documentation, ce qui reste déduit ou non vérifié).
 """
 
 
+def documentation(captures: list, plafond: int) -> str:
+    """Marche à suivre renvoyée par l'outil documentation_demarrer."""
+    liste = ("   - captures d'écran fournies, à associer aux scènes qu'elles illustrent (champ capture, nom exact) "
+             "d'après leur nom :\n" + "\n".join(f"     {c}" for c in captures) + "\n") if captures else \
+            "   - aucune capture d'écran fournie : laisse le champ capture vide.\n"
+    return DOCUMENTATION.format(captures=liste, plafond=plafond)
+
+
 def construire(profil: config.Profil, sources: list, logs: list, utilisateur: str, reglages: config.Reglages,
-               ticket: dict | None = None, captures: list | None = None) -> str:
+               ticket: dict | None = None) -> str:
     lignes_sources = "\n".join(f"- {nom} : {chemin}" for nom, chemin in sources)
 
     blocs_logs = []
@@ -167,16 +191,10 @@ def construire(profil: config.Profil, sources: list, logs: list, utilisateur: st
                if avec_bitbucket else "Si la tâche n'est pas encore dans les sources, dis-le clairement.")
     bloc_ticket = (TICKET.format(cle=ticket["cle"], utilisateur=utilisateur or "L'utilisateur", texte=ticket["texte"],
                                  absente=absente) if ticket else "")
-    bloc_documentation = ""
-    if captures is not None:
-        liste = ("   - captures d'écran fournies, à associer aux scènes qu'elles illustrent (champ capture, nom exact) "
-                 "d'après leur nom :\n" + "\n".join(f"     {c}" for c in captures) + "\n") if captures else \
-                "   - aucune capture d'écran fournie : laisse le champ capture vide.\n"
-        bloc_documentation = DOCUMENTATION.format(captures=liste)
     return MODELE.format(utilisateur=utilisateur or "l'utilisateur", profil=profil.nom, jira=jira, ticket=bloc_ticket,
                          bitbucket=bitbucket_txt, methode_bitbucket=methode_bitbucket,
                          description=profil.description or "", sources=lignes_sources, logs=logs_txt,
                          base=base_txt, ordre_specifique=ordre, requetes_base=reglages.requetes_base,
                          requetes_generation=reglages.requetes_base_generation,
                          dossier_fichiers=config.dossier_fichiers(profil),
-                         donnees_personnelles=DONNEES_REELLES if profil.donnees_reelles else ANONYMISER) + bloc_documentation
+                         donnees_personnelles=DONNEES_REELLES if profil.donnees_reelles else ANONYMISER)

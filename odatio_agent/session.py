@@ -3,7 +3,8 @@ Session de conversation avec l'agent (Claude Agent SDK) : outils de fichiers lim
 outils maison base, logs et fichiers d'interface exposés en serveur MCP dans le processus
 (create_sdk_mcp_server), garde-fou sur les chemins, aucun réglage utilisateur de Claude Code chargé.
 
-La seule écriture possible est fichier_ecrire, dans le dossier des fichiers générés du profil, après
+Écritures possibles : le document de documentation (documentation_demarrer puis documentation_enregistrer,
+dans .cache/documentation) et fichier_ecrire, dans le dossier des fichiers générés du profil, après
 generation_demarrer : cet appel annonce une génération demandée par l'utilisateur et porte le plafond d'accès
 base de la question à reglages.requetes_base_generation.
 """
@@ -30,6 +31,7 @@ class Bilan:
     session_id: str = ""
     reponse: str = ""      # texte final de la réponse (sans les commentaires intermédiaires)
     fichiers: list = field(default_factory=list)  # fichiers écrits pendant la question (fichiers.ecrire)
+    documentation: dict | None = None  # {"dossier", "sujet"} si un document a été enregistré pendant la question
 
 
 def _texte(texte: str, erreur: bool = False) -> dict:
@@ -42,11 +44,13 @@ class Session:
                  dossier_documentation: Path | None = None):
         """reprise : identifiant d'une conversation précédente à poursuivre (Bilan.session_id), utilisé par
         l'IHM qui ouvre une session par question. ticket : tâche Jira à tester (outils.jira_ticket), donnée
-        à l'agent comme contexte. dossier_documentation : mode documentation (documentation.py), l'agent y
-        enregistre son document avec l'outil documentation_enregistrer."""
-        self.profil, self.reglages = profil, reglages
+        à l'agent comme contexte. dossier_documentation : dossier déjà préparé (captures d'écran déposées)
+        pour la documentation ; sinon documentation_demarrer en crée un quand l'utilisateur en demande une."""
+        self.profil, self.reglages, self.ticket = profil, reglages, ticket
         self.requetes_base, self.generation, self.fichiers = 0, False, []
-        self.dossier_documentation = Path(dossier_documentation) if dossier_documentation else None
+        self.dossier_fourni = Path(dossier_documentation) if dossier_documentation else None
+        self.dossier_documentation = self.dossier_fourni
+        self.documentation_ouverte = False
         self.document = None   # document accepté par documentation_enregistrer
         racines = [chemin for _, chemin in sources] + list(logs)
         sortie = config.dossier_fichiers(profil)
@@ -55,9 +59,7 @@ class Session:
         noms_maison = [f"mcp__{SERVEUR}__{t.name}" for t in outils_maison]
 
         self.options = ClaudeAgentOptions(
-            system_prompt=consignes.construire(profil, sources, logs, utilisateur, reglages, ticket,
-                                               documentation.captures(self.dossier_documentation)
-                                               if self.dossier_documentation else None),
+            system_prompt=consignes.construire(profil, sources, logs, utilisateur, reglages, ticket),
             tools=OUTILS_FICHIERS,                       # aucun autre outil intégré : ni Bash, ni Edit, ni Write
             allowed_tools=OUTILS_FICHIERS + noms_maison,  # autorisés sans confirmation
             permission_mode="dontAsk",                    # tout le reste est refusé
@@ -80,7 +82,8 @@ class Session:
     # -- Outils maison ------------------------------------------------------------------------------
 
     def plafond_base(self) -> int:
-        return self.reglages.requetes_base_generation if self.generation else self.reglages.requetes_base
+        large = self.generation or self.documentation_ouverte
+        return self.reglages.requetes_base_generation if large else self.reglages.requetes_base
 
     def _outils_maison(self) -> list:
         profil, liste = self.profil, []
@@ -147,8 +150,7 @@ class Session:
 
         if bitbucket.configure(profil):
             liste += self._outils_bitbucket(executer)
-        if self.dossier_documentation:
-            liste.append(self._outil_documentation())
+        liste += self._outils_documentation()
         liste += self._outils_fichiers()
         return liste
 
@@ -198,11 +200,31 @@ class Session:
 
         return [generation_demarrer, fichier_ecrire]
 
-    def _outil_documentation(self):
+    def _outils_documentation(self) -> list:
+        @tool("documentation_demarrer", "À appeler UNE fois, avant toute recherche, quand l'utilisateur demande une "
+              "documentation, une vidéo, une démo, un tutoriel ou un support de présentation d'une fonctionnalité "
+              "ou d'une tâche. Renvoie la marche à suivre et le format du document. Jamais pour une simple question.",
+              {"type": "object", "properties": {"sujet": {"type": "string",
+                                                          "description": "la fonctionnalité, en quelques mots"}},
+               "required": ["sujet"]})
+        async def documentation_demarrer(args):
+            sujet = str(args.get("sujet", "")).strip() or "documentation"
+            titre = f"{self.ticket['cle']} — {self.ticket['titre']}" if self.ticket else sujet
+            if self.dossier_documentation is None:
+                self.dossier_documentation = documentation.nouveau_dossier(self.ticket["cle"] if self.ticket else sujet)
+            (self.dossier_documentation / "sujet.txt").write_text(titre, encoding="utf-8")
+            self.documentation_ouverte = True
+            outils.journal(self.profil, "documentation_demarrer", {"sujet": sujet[:200]})
+            return _texte(consignes.documentation(documentation.captures(self.dossier_documentation),
+                                                  self.plafond_base()))
+
         @tool("documentation_enregistrer", "Enregistre la documentation fonctionnelle (document + scénario de la "
-              "vidéo) destinée au consultant. À appeler une fois l'enquête terminée ; si le document est refusé, "
-              "corrige les points signalés et renvoie-le en entier.", documentation.SCHEMA)
+              "vidéo) destinée au consultant, après documentation_demarrer et une fois l'enquête terminée. La "
+              "vidéo et le document Word sont montés automatiquement ensuite. Si le document est refusé, corrige "
+              "les points signalés et renvoie-le en entier.", documentation.SCHEMA)
         async def documentation_enregistrer(args):
+            if not self.documentation_ouverte or self.dossier_documentation is None:
+                return _texte("Appelle d'abord documentation_demarrer, puis mène l'enquête.", True)
             try:
                 self.document = documentation.enregistrer(self.dossier_documentation, args)
             except documentation.DocumentationErreur as e:
@@ -211,70 +233,11 @@ class Session:
             outils.journal(self.profil, "documentation_enregistrer", {"scenes": len(self.document["scenes"])})
             return _texte(f"Document enregistré : {len(self.document['scenes'])} scènes, "
                           f"{len(self.document['cas_de_test'])} cas de test, vidéo d'environ "
-                          f"{documentation.duree_estimee(self.document)} min. Termine par une phrase de synthèse, "
-                          f"sans recopier le document.")
+                          f"{documentation.duree_estimee(self.document)} min, montée automatiquement après ta "
+                          f"réponse. Termine par 3 à 5 lignes : ce que couvre la documentation, ce qui reste déduit "
+                          f"ou non vérifié. Ne recopie pas le document.")
 
-        return documentation_enregistrer
-
-    def _outils_bitbucket(self, executer) -> list:
-        depots_profil = ", ".join(s.nom for s in self.profil.sources if s.depot) or "aucun"
-        depot_desc = (f"dépôt : nom d'une source du profil ({depots_profil}), « PROJET/depot » ou URL Bitbucket")
-
-        def schema(proprietes: dict, requis: list) -> dict:
-            return {"type": "object", "properties": proprietes, "required": requis}
-
-        texte = {"type": "string"}
-        depot = {"type": "string", "description": depot_desc}
-        branche = {"type": "string", "description": "branche (défaut : celle du profil, sinon celle du dépôt)"}
-
-        @tool("bitbucket_depots", "Bitbucket : liste les dépôts lisibles (filtre par nom et/ou clé de projet). "
-              "Pour trouver une bibliothèque ou le dépôt d'un autre client absent des sources.",
-              schema({"recherche": texte, "projet": {"type": "string", "description": "clé de projet, ex. STD"}}, []))
-        async def bitbucket_depots(args):
-            return await executer(outils.bitbucket_depots, args.get("recherche", ""), args.get("projet", ""))
-
-        @tool("bitbucket_branches", "Bitbucket : cherche les branches dont le nom contient 'filtre' (ex. la clé du "
-              "ticket ODA-1234), les plus récentes d'abord. Sans 'depot' ni 'projet' : dans les dépôts du profil.",
-              schema({"filtre": texte, "depot": depot,
-                      "projet": {"type": "string", "description": "tous les dépôts d'un projet (60 au plus)"}}, []))
-        async def bitbucket_branches(args):
-            return await executer(outils.bitbucket_branches, args.get("filtre", ""), args.get("depot", ""),
-                                  args.get("projet", ""))
-
-        @tool("bitbucket_fichiers", "Bitbucket : liste les fichiers d'un dépôt sur une branche (récursif depuis "
-              "'dossier'), filtrés par 'motif' (*.java, *Vague*, texte contenu dans le chemin).",
-              schema({"depot": depot, "branche": branche, "dossier": texte, "motif": texte}, ["depot"]))
-        async def bitbucket_fichiers(args):
-            return await executer(outils.bitbucket_fichiers, args["depot"], args.get("branche", ""),
-                                  args.get("dossier", ""), args.get("motif", ""))
-
-        @tool("bitbucket_lire", "Bitbucket : lit un fichier (lignes numérotées, 400 au plus à partir de 'debut') ou "
-              "liste un dossier, sur une branche donnée. Pour du code absent des sources clonées.",
-              schema({"depot": depot, "chemin": texte, "branche": branche,
-                      "debut": {"type": "integer", "minimum": 1},
-                      "nombre": {"type": "integer", "minimum": 1, "maximum": bitbucket.LIGNES_MAX}},
-                     ["depot", "chemin"]))
-        async def bitbucket_lire(args):
-            return await executer(outils.bitbucket_lire, args["depot"], args["chemin"], args.get("branche", ""),
-                                   int(args.get("debut") or 1), int(args.get("nombre") or bitbucket.LIGNES_MAX))
-
-        @tool("bitbucket_comparer", "Bitbucket : ce qu'une branche apporte par rapport à sa cible ('vers' ; par "
-              "défaut la cible de sa pull request, sinon la branche du profil) : pull request, commits et fichiers "
-              "modifiés ; avec 'fichier', le diff de ce fichier.",
-              schema({"depot": depot, "branche": texte, "vers": texte, "fichier": texte}, ["depot", "branche"]))
-        async def bitbucket_comparer(args):
-            return await executer(outils.bitbucket_comparer, args["depot"], args["branche"], args.get("vers", ""),
-                                  args.get("fichier", ""))
-
-        @tool("bitbucket_chercher", "Bitbucket : recherche de code dans tous les dépôts lisibles (ou un dépôt, un "
-              "projet). N'indexe que la branche par défaut de chaque dépôt ; peut être indisponible sur le serveur.",
-              schema({"texte": texte, "depot": depot, "projet": texte}, ["texte"]))
-        async def bitbucket_chercher(args):
-            return await executer(outils.bitbucket_chercher, args["texte"], args.get("depot", ""),
-                                  args.get("projet", ""))
-
-        return [bitbucket_depots, bitbucket_branches, bitbucket_fichiers, bitbucket_lire, bitbucket_comparer,
-                bitbucket_chercher]
+        return [documentation_demarrer, documentation_enregistrer]
 
     # -- Conversation -------------------------------------------------------------------------------
 
@@ -288,6 +251,8 @@ class Session:
         """Pose une question (le contexte des questions précédentes est conservé) ; diffuse le texte de la
         réponse et les outils utilisés au fil de l'eau."""
         self.requetes_base, self.generation, self.fichiers = 0, False, []
+        self.document, self.documentation_ouverte = None, False
+        self.dossier_documentation = self.dossier_fourni   # un nouveau dossier par documentation demandée
         await self.client.query(question)
         bilan = Bilan(cout_usd=None, tours=0, erreur=False)
         async for message in self.client.receive_response():
@@ -302,4 +267,7 @@ class Session:
                               message="; ".join(message.errors or []) or (message.terminal_reason or ""),
                               session_id=message.session_id or "", reponse=message.result or "")
         bilan.fichiers = list(self.fichiers)
+        if self.document and self.dossier_documentation:
+            bilan.documentation = {"dossier": str(self.dossier_documentation),
+                                   "sujet": documentation.sujet(self.dossier_documentation)}
         return bilan

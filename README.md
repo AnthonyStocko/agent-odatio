@@ -117,7 +117,7 @@ Le jeton détermine ce qui est lisible : un jeton personnel voit tous tes dépô
 
 ### Documentation pour le consultant fonctionnel
 
-Dans l'assistant, le bloc « Documentation pour le consultant fonctionnel » (ou `python agent.py --profil <p> --ticket ODA-1234 --documenter`) fait enquêter l'agent sur la tâche ou la fonctionnalité, en repartant de la conversation en cours, puis lui fait rédiger :
+Demande-le simplement dans la conversation (« fais-moi une vidéo de cette tâche pour le consultant ») : l'agent enquête, enregistre sa documentation, et la vidéo est montée puis affichée sous sa réponse. Pour y joindre des captures d'écran, passe par le bloc « Documentation pour le consultant fonctionnel » de l'assistant (ou `python agent.py --profil <p> --ticket ODA-1234 --documenter --captures <dossier>`). Dans les deux cas, l'agent enquête sur la tâche ou la fonctionnalité, en repartant de la conversation en cours, puis rédige :
 
 - une **vidéo commentée** (MP4, 1080p, sous-titrée) : le besoin, ce qui change pour l'utilisateur, les écrans et traitements, les règles de gestion, le paramétrage, chaque cas de test, les points d'attention ;
 - un **document Word** et sa version Markdown, avec en plus les cas de test détaillés (écran, action, résultat attendu) et les sources de chaque affirmation (dépôt, branche, fichier, ligne ; table), qui ne sont pas lues dans la vidéo.

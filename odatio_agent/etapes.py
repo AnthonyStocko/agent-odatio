@@ -25,6 +25,10 @@ def resumer(nom: str, entree: dict, racines: list) -> str:
         return f"Prépare un fichier d'interface : {entree.get('objet', '')}".rstrip(" :")
     if nom_court == "fichier_ecrire":
         return f"Écrit le fichier {entree.get('nom', '')}"
+    if nom_court == "documentation_demarrer":
+        return f"Prépare une documentation : {entree.get('sujet', '')}".rstrip(" :")
+    if nom_court == "documentation_enregistrer":
+        return f"Enregistre la documentation ({len(entree.get('scenes') or [])} scènes)"
     if nom_court.startswith("bitbucket_"):
         depot = entree.get("depot", "") or entree.get("projet", "")
         branche = f" @ {entree['branche']}" if entree.get("branche") else ""

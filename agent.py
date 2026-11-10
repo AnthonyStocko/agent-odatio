@@ -10,6 +10,7 @@ Agent fonctionnel Odatio — conversation en ligne de commande.
                                                   documentation et vidéo de la tâche pour le consultant
   python agent.py --profil local --documenter "La libération des vagues"   idem, sur une fonctionnalité
   python agent.py --rendre .cache/documentation/<dossier>    refait document et vidéo après correction
+En conversation aussi, « fais-moi une vidéo de cette fonctionnalité » produit la documentation.
 
 En conversation : /nouveau repart d'une conversation vide, /quitter (ou Ctrl+D) termine.
 """
@@ -28,7 +29,7 @@ from odatio_agent.session import Session
 GRIS, GRAS, ROUGE, VERT, FIN = "\033[90m", "\033[1m", "\033[31m", "\033[32m", "\033[0m"
 
 
-async def _poser(session: Session, question: str, racines: list) -> None:
+async def _poser(session: Session, question: str, racines: list, monter: bool = True):
     def sur_texte(texte):
         print(texte, flush=True)
 
@@ -41,6 +42,9 @@ async def _poser(session: Session, question: str, racines: list) -> None:
     cout = f"{bilan.cout_usd:.3f} $" if bilan.cout_usd is not None else "coût inconnu"
     etat = f"{ROUGE}interrompu : {bilan.message}{FIN} — " if bilan.erreur else ""
     print(f"{GRIS}— {etat}{bilan.tours} étape(s), {cout}{FIN}\n")
+    if monter and bilan.documentation:  # documentation demandée en cours de conversation
+        rendre(Path(bilan.documentation["dossier"]))
+    return bilan
 
 
 async def converser(profil: config.Profil, reglages: config.Reglages, question: str, maj: bool,
@@ -79,14 +83,9 @@ async def converser(profil: config.Profil, reglages: config.Reglages, question: 
         await session.fermer()
 
 
-def sujet_documentation(dossier: Path) -> str:
-    fichier = Path(dossier) / "sujet.txt"
-    return fichier.read_text(encoding="utf-8").strip() if fichier.exists() else Path(dossier).name
-
-
 def rendre(dossier: Path, sans_video: bool = False) -> int:
     try:
-        resultat = documentation.produire(dossier, sujet_documentation(dossier), video_aussi=not sans_video,
+        resultat = documentation.produire(dossier, documentation.sujet(dossier), video_aussi=not sans_video,
                                           journal=lambda m: print(f"{GRIS}  · {m}{FIN}", flush=True))
     except (documentation.DocumentationErreur, video.VideoErreur) as e:
         print(f"{ROUGE}{e}{FIN}")
@@ -114,10 +113,10 @@ async def documenter(profil: config.Profil, reglages: config.Reglages, sujet: st
     session = Session(profil, prets, logs, reglages, getpass.getuser(), ticket=ticket, dossier_documentation=dossier)
     await session.ouvrir()
     try:
-        await _poser(session, documentation.question(sujet, ticket), racines)
+        bilan = await _poser(session, documentation.question(sujet, ticket), racines, monter=False)
     finally:
         await session.fermer()
-    if not session.document:
+    if not bilan.documentation:
         print(f"{ROUGE}L'agent n'a pas enregistré de document (étapes ou budget épuisés ?). Relance avec un plafond "
               f"plus haut, ou précise le sujet.{FIN}")
         return 1

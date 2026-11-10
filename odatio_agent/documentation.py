@@ -71,11 +71,16 @@ class DocumentationErreur(Exception):
 
 
 def question(sujet: str, ticket: dict | None) -> str:
-    """Demande adressée à l'agent (ligne de commande et IHM)."""
+    """Demande adressée à l'agent par le bloc de l'IHM et par --documenter."""
     cible = f"la tâche {ticket['cle']} ({ticket['titre']})" if ticket else f"la fonctionnalité suivante : {sujet}"
     angle = f" Angle demandé : {sujet}." if ticket and sujet else ""
-    return (f"Rédige la documentation fonctionnelle complète de {cible}, destinée au consultant fonctionnel, puis "
-            f"enregistre-la avec documentation_enregistrer.{angle}")
+    return (f"Fais la documentation fonctionnelle complète (document et vidéo) de {cible}, destinée au consultant "
+            f"fonctionnel : appelle documentation_demarrer, enquête, puis documentation_enregistrer.{angle}")
+
+
+def sujet(dossier: Path) -> str:
+    fichier = Path(dossier) / "sujet.txt"
+    return fichier.read_text(encoding="utf-8").strip() if fichier.exists() else Path(dossier).name
 
 
 # ---------------------------------------------------------------------------

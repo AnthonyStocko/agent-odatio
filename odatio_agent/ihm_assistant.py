@@ -36,7 +36,6 @@ def _etat():
 
 def nouvelle_conversation() -> None:
     st.session_state.messages, st.session_state.reprise = [], ""
-    st.session_state.documentation = None
 
 
 def _preparer(profil: config.Profil, mettre_a_jour: bool = False):
@@ -99,10 +98,9 @@ async def _documenter(profil, prets, logs, dossier, question, sur_texte, sur_out
                       ticket=st.session_state.ticket, dossier_documentation=dossier)
     await session.ouvrir()
     try:
-        bilan = await session.demander(question, sur_texte, sur_outil)
+        return await session.demander(question, sur_texte, sur_outil)
     finally:
         await session.fermer()
-    return bilan, session.document
 
 
 def _generer_documentation(profil, sujet: str, captures, avec_video: bool) -> None:
@@ -132,30 +130,37 @@ def _generer_documentation(profil, sujet: str, captures, avec_video: bool) -> No
 
     question = documentation.question(sujet, etat.ticket)
     try:  # reprend la conversation en cours si elle existe : l'enquête déjà faite sert de point de départ
-        bilan, document = asyncio.run(_documenter(profil, prets, logs, dossier, question, lambda _: None, sur_outil,
+        bilan = asyncio.run(_documenter(profil, prets, logs, dossier, question, lambda _: None, sur_outil,
                                                   etat.reprise))
     except Exception as e:
         statut.update(label="Échec", state="error")
         st.error(f"L'agent n'a pas pu rédiger la documentation : {e}")
         return
-    if not document:
+    if not bilan.documentation:
         statut.update(label="Aucun document enregistré", state="error")
         st.error("L'agent n'a pas enregistré de document" + (f" ({bilan.message})" if bilan.message else "") +
                  ". Augmente les étapes ou le budget par question dans la configuration, ou précise le sujet.")
         return
 
-    statut.update(label="Mise en forme du document et de la vidéo…")
+    cout = f"{bilan.cout_usd:.2f} $" if bilan.cout_usd is not None else "coût inconnu"
+    if _mettre_en_forme(dossier, titre, avec_video, statut):
+        statut.update(label=f"Documentation prête ({len(etapes)} étape(s), {cout})", state="complete", expanded=False)
+
+
+def _mettre_en_forme(dossier, titre: str, avec_video: bool, statut) -> bool:
+    """Monte le document et la vidéo d'un dossier où l'agent a enregistré son document ; résultat dans
+    st.session_state.documentation."""
+    statut.update(label="Mise en forme du document et de la vidéo…", state="running")
     try:
-        fichiers = documentation.produire(dossier, titre, video_aussi=avec_video, journal=statut.write)
+        fichiers = documentation.produire(Path(dossier), titre, video_aussi=avec_video, journal=statut.write)
     except (documentation.DocumentationErreur, video.VideoErreur) as e:
         statut.update(label="Échec de la mise en forme", state="error")
         st.error(str(e))
-        return
-    cout = f"{bilan.cout_usd:.2f} $" if bilan.cout_usd is not None else "coût inconnu"
-    statut.update(label=f"Documentation prête ({len(etapes)} étape(s), {cout})", state="complete", expanded=False)
-    etat.documentation = {"dossier": str(dossier), "sujet": titre,
-                          "fichiers": {k: str(v) for k, v in fichiers.items() if v and k != "voix"},
-                          "voix": fichiers.get("voix", "")}
+        return False
+    st.session_state.documentation = {"dossier": str(dossier), "sujet": titre,
+                                      "fichiers": {k: str(v) for k, v in fichiers.items() if v and k != "voix"},
+                                      "voix": fichiers.get("voix", "")}
+    return True
 
 
 def _afficher_documentation() -> None:
@@ -211,7 +216,9 @@ def _bloc_documentation(profil) -> None:
             _afficher_documentation()
             st.divider()
         st.caption("L'agent enquête comme pour une question (en repartant de la conversation en cours), puis rédige "
-                   "un document et une vidéo commentée : besoin, écrans, règles de gestion, paramétrage, cas de test.")
+                   "un document et une vidéo commentée : besoin, écrans, règles de gestion, paramétrage, cas de test. "
+                   "Tu peux aussi le demander directement dans la conversation (« fais-moi une vidéo de cette "
+                   "tâche ») ; passe par ce formulaire pour y joindre des captures d'écran.")
         with st.form("formulaire-documentation", border=False):
             sujet = st.text_input("Fonctionnalité à documenter", value="" if etat.ticket else "",
                                   placeholder=(f"La tâche {etat.ticket['cle']} (ou précise un angle)" if etat.ticket
@@ -325,6 +332,11 @@ def page(page_configuration) -> None:
             st.markdown(m["texte"])
             if m.get("fichiers"):
                 _afficher_fichiers(m["fichiers"], f"fichier-{n}")
+            if m.get("video") and Path(m["video"]).exists():
+                st.video(m["video"])
+            if m.get("documentation"):
+                st.caption("Document Word, téléchargements, corrections et envoi au ticket : bloc « Documentation "
+                           "pour le consultant fonctionnel », en haut de la page.")
             if m.get("etapes"):
                 with st.expander(f"{len(m['etapes'])} étape(s) consultée(s)"):
                     st.markdown("\n".join(f"- {e}" for e in m["etapes"]))
@@ -373,10 +385,19 @@ def page(page_configuration) -> None:
         if bilan.fichiers:
             _afficher_fichiers(bilan.fichiers, f"fichier-{len(etat.messages)}")
         statut.update(label=f"{len(etapes)} étape(s) consultée(s)", state="error" if bilan.erreur else "complete")
+        video_message = ""
+        if bilan.documentation:  # documentation demandée dans la conversation : la vidéo est montée ici
+            montage = st.status("Mise en forme du document et de la vidéo…", expanded=True)
+            if _mettre_en_forme(bilan.documentation["dossier"], bilan.documentation["sujet"], True, montage):
+                montage.update(label="Vidéo et document prêts", state="complete", expanded=False)
+                video_message = etat.documentation["fichiers"].get("video", "")
         cout = f"{bilan.cout_usd:.3f} $" if bilan.cout_usd is not None else "coût inconnu"
         resume_bilan = (f"Interrompu : {bilan.message}, " if bilan.erreur else "") + cout
         st.caption(resume_bilan)
 
     etat.reprise = bilan.session_id or etat.reprise
     etat.messages.append({"role": "assistant", "texte": reponse, "etapes": etapes, "bilan": resume_bilan,
-                          "fichiers": bilan.fichiers})
+                          "fichiers": bilan.fichiers, "video": video_message,
+                          "documentation": bool(bilan.documentation)})
+    if bilan.documentation:
+        st.rerun()  # réaffiche la page : vidéo sous la réponse, téléchargements dans le bloc de documentation
