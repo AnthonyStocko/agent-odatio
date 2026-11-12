@@ -125,7 +125,7 @@ class TestVoix(AvecDossierTemporaire):
     def test_edge_jamais_choisi_automatiquement(self):
         essayes = []
         with mock.patch.dict(config._SECRETS, {}, clear=True), \
-                mock.patch.object(video, "_disponible", side_effect=lambda m, n, j: essayes.append(m)):
+                mock.patch.object(video, "_disponible", side_effect=lambda m, n, j, *_: essayes.append(m)):
             video.oublier_moteur()
             self.assertEqual(video.moteur_voix(), ("", ""))
         video.oublier_moteur()

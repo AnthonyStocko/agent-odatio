@@ -1,6 +1,10 @@
 """
 Vidéo explicative d'une fonctionnalité : une diapositive par scène du document (Pillow), lue par une voix de
-synthèse française, assemblée en MP4 avec des sous-titres (ffmpeg fourni par imageio-ffmpeg).
+synthèse, assemblée en MP4 avec des sous-titres (ffmpeg fourni par imageio-ffmpeg).
+
+Langue : celle du document (champ « langue », fr ou en, sinon déduite du texte). Les phrases ajoutées par la
+vidéo (cas de test, prérequis, points d'attention, fin) et la voix suivent cette langue : un document anglais
+est lu par une voix anglaise, sans mots français intercalés.
 
 Voix (voir la section « Voix ») : par défaut Piper, voix neuronale locale, sans envoyer le texte à un service
 externe ; au choix les voix en ligne de Microsoft Edge, plus naturelles encore ; à défaut les voix de Windows.
@@ -8,6 +12,7 @@ Sans voix, ou avec DOCUMENTATION_VOIX=aucune : vidéo muette, la narration est i
 """
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tempfile
@@ -32,12 +37,12 @@ POLICES = {
 }
 
 SCRIPT_SAPI = r"""
-param([string]$texte, [string]$sortie, [string]$voulue)
+param([string]$texte, [string]$sortie, [string]$voulue, [string]$langue = 'fr')
 Add-Type -AssemblyName System.Speech
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $voix = $s.GetInstalledVoices() | Where-Object { $_.Enabled } | ForEach-Object { $_.VoiceInfo }
-if ($voulue) { $voix = $voix | Where-Object { $_.Name -like "*$voulue*" } }
-else { $voix = $voix | Where-Object { $_.Culture.Name -like 'fr*' } }
+$voix = $voix | Where-Object { $_.Culture.Name -like "$langue*" }
+if ($voulue) { $nommee = $voix | Where-Object { $_.Name -like "*$voulue*" }; if ($nommee) { $voix = $nommee } }
 $v = $voix | Select-Object -First 1
 if (-not $v) { exit 3 }
 $s.SelectVoice($v.Name)
@@ -56,13 +61,95 @@ class VideoErreur(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Langue
+# ---------------------------------------------------------------------------
+
+LIBELLES = {
+    "fr": {
+        "cas": "Cas de test", "prerequis": "Prérequis", "deux_points": " : ",
+        "premier": "D’abord", "ensuite": "Ensuite",
+        "etape": "{debut}, {action} ; on doit constater que {attendu}.",
+        "suite_document": "Les étapes suivantes sont détaillées dans le document joint.",
+        "autres_etapes": "… et {n} autres étapes, détaillées dans le document",
+        "attention": "Points d'attention", "fin": "Pour aller plus loin",
+        "fin_point": "Le document joint détaille le paramétrage, chaque cas de test et les sources.",
+        "fin_lue": "Le document joint détaille le paramétrage, chaque cas de test, et les sources de cette "
+                   "présentation.",
+        "pied": "Documentation fonctionnelle — Agent Odatio", "srt": "fre", "adjectif": "française",
+        "essai": "Ceci est un essai de la voix utilisée pour les vidéos de documentation.", "bonjour": "Bonjour.",
+    },
+    "en": {
+        "cas": "Test case", "prerequis": "Prerequisites", "deux_points": ": ",
+        "premier": "First", "ensuite": "Next",
+        "etape": "{debut}, {action}. Expected result: {attendu}.",
+        "suite_document": "The remaining steps are described in the attached document.",
+        "autres_etapes": "… and {n} more steps, described in the document",
+        "attention": "Things to note", "fin": "Find out more",
+        "fin_point": "The attached document covers the configuration, each test case and the sources.",
+        "fin_lue": "The attached document covers the configuration, each test case, and the sources used for "
+                   "this presentation.",
+        "pied": "Functional documentation — Odatio agent", "srt": "eng", "adjectif": "anglaise",
+        "essai": "This is a test of the voice used for documentation videos.", "bonjour": "Hello.",
+    },
+}
+LANGUES = list(LIBELLES)
+
+_MOTS_OUTILS = {
+    "fr": {"le", "la", "les", "et", "est", "des", "du", "une", "un", "pour", "avec", "dans", "que", "sur", "qui",
+           "au", "aux", "ne", "pas", "par", "sont", "cette", "ce"},
+    "en": {"the", "and", "is", "of", "to", "with", "for", "this", "that", "are", "when", "each", "it", "on",
+           "in", "a", "an", "by", "not", "from", "be", "can", "its"},
+}
+
+
+def langue(document: dict) -> str:
+    """fr ou en : le champ « langue » du document, sinon déduite des mots courants du texte lu."""
+    demandee = str(document.get("langue") or "").strip().lower()[:2]
+    if demandee in LIBELLES:
+        return demandee
+    texte = " ".join([str(document.get("titre", "")), str(document.get("resume", ""))]
+                     + [str(s.get("narration", "")) for s in document.get("scenes") or [] if isinstance(s, dict)])
+    mots = re.findall(r"[a-zà-ÿ]+", texte.lower())
+    compte = {l: sum(m in outils for m in mots) for l, outils in _MOTS_OUTILS.items()}
+    return "en" if compte["en"] > compte["fr"] else "fr"
+
+
+def _sans_point(texte: str) -> str:
+    return str(texte or "").strip().rstrip(".;: ")
+
+
+def _minuscule(texte: str) -> str:
+    """Première lettre en minuscule, sauf sigle ou mot en capitales (« DLC », « FIFO »)."""
+    return texte[0].lower() + texte[1:] if texte[:1].isupper() and not texte[1:2].isupper() else texte
+
+
+def _majuscule(texte: str) -> str:
+    return texte[:1].upper() + texte[1:]
+
+
+def _apres_deux_points(texte: str, lang: str) -> str:
+    """Après un deux-points : minuscule en français, majuscule en anglais (« Expected result: The… »)."""
+    return _minuscule(texte) if lang == "fr" else _majuscule(texte)
+
+
+def etape_lue(etape: dict, n: int, lang: str = "fr") -> str:
+    """Une étape de cas de test telle qu'elle est lue : « First, … Expected result: … »."""
+    L = LIBELLES[lang]
+    return L["etape"].format(debut=L["ensuite"] if n > 1 else L["premier"],
+                             action=_minuscule(_sans_point(etape.get("action"))),
+                             attendu=_apres_deux_points(_sans_point(etape.get("attendu")), lang))
+
+
+# ---------------------------------------------------------------------------
 # Séquences : ce qui est montré et lu
 # ---------------------------------------------------------------------------
 
 def sequences(document: dict) -> list:
     """[{type, titre, points, narration, capture}] : titre, scènes, cas de test, points d'attention, fin."""
+    lang = langue(document)
+    L, dp = LIBELLES[lang], LIBELLES[lang]["deux_points"]
     suite = [{"type": "titre", "titre": document["titre"], "points": [document["resume"]],
-              "narration": f"{document['titre']}. {document['resume']}"}]
+              "narration": f"{_sans_point(document['titre'])}. {document['resume']}", "pied": L["pied"]}]
     for scene in document["scenes"]:
         suite.append({"type": "scene", "titre": scene["titre"], "points": list(scene.get("points") or []),
                       "narration": scene["narration"], "capture": scene.get("capture") or ""})
@@ -71,25 +158,21 @@ def sequences(document: dict) -> list:
         points = [f"{e.get('ecran') + ' : ' if e.get('ecran') else ''}{e.get('action', '')} → {e.get('attendu', '')}"
                   for e in etapes[:6]]
         if len(etapes) > 6:
-            points[-1] = f"… et {len(etapes) - 5} autres étapes, détaillées dans le document"
-        lu = [f"Cas de test {i} : {cas['titre']}."]
+            points[-1] = L["autres_etapes"].format(n=len(etapes) - 5)
+        lu = [f"{L['cas']} {i}. {_majuscule(_sans_point(cas['titre']))}."]
         if cas.get("prerequis"):
-            lu.append(f"Prérequis : {cas['prerequis'].rstrip('.')}.")
-        for n, e in enumerate(etapes[:4], start=1):
-            lu.append(f"{'Ensuite' if n > 1 else 'D’abord'}, {e.get('action', '').rstrip('.')} ; on doit constater "
-                      f"que {e.get('attendu', '').rstrip('.')}.")
+            lu.append(f"{L['prerequis']}{dp}{_apres_deux_points(_sans_point(cas['prerequis']), lang)}.")
+        lu += [etape_lue(e, n, lang) for n, e in enumerate(etapes[:4], start=1)]
         if len(etapes) > 4:
-            lu.append("Les étapes suivantes sont détaillées dans le document joint.")
-        suite.append({"type": "test", "titre": f"Cas de test {i} — {cas['titre']}", "points": points,
-                      "narration": " ".join(lu), "sous_titre": cas.get("prerequis", "")})
+            lu.append(L["suite_document"])
+        prerequis = f"{L['prerequis']}{dp}{cas['prerequis']}" if cas.get("prerequis") else ""
+        suite.append({"type": "test", "titre": f"{L['cas']} {i} — {cas['titre']}", "points": points,
+                      "narration": " ".join(lu), "sous_titre": prerequis})
     if document.get("points_attention"):
-        suite.append({"type": "scene", "titre": "Points d'attention", "points": document["points_attention"][:6],
-                      "narration": "Points d'attention. " + " ".join(p.rstrip(".") + "." for p in
-                                                                    document["points_attention"][:6])})
-    suite.append({"type": "fin", "titre": "Pour aller plus loin",
-                  "points": ["Le document joint détaille le paramétrage, chaque cas de test et les sources."],
-                  "narration": "Le document joint détaille le paramétrage, chaque cas de test, et les sources de "
-                               "cette présentation."})
+        suite.append({"type": "scene", "titre": L["attention"], "points": document["points_attention"][:6],
+                      "narration": f"{L['attention']}. " + " ".join(_sans_point(p) + "." for p in
+                                                                     document["points_attention"][:6])})
+    suite.append({"type": "fin", "titre": L["fin"], "points": [L["fin_point"]], "narration": L["fin_lue"]})
     return suite
 
 
@@ -170,7 +253,7 @@ def diapositive(seq: dict, numero: int, total: int, sujet: str, dossier: Path, s
         for ligne in _couper(seq["points"][0], _police(40), LARGEUR - 2 * MARGE)[:6]:
             dessin.text((MARGE, y), ligne, font=_police(40), fill=ACCENT_CLAIR)
             y += 56
-        dessin.text((MARGE, HAUTEUR - 110), "Documentation fonctionnelle — Agent Odatio", font=_police(28),
+        dessin.text((MARGE, HAUTEUR - 110), seq.get("pied") or LIBELLES["fr"]["pied"], font=_police(28),
                     fill=ACCENT_CLAIR)
     else:
         image = Image.new("RGB", (LARGEUR, HAUTEUR), FOND)
@@ -204,7 +287,7 @@ def diapositive(seq: dict, numero: int, total: int, sujet: str, dossier: Path, s
         else:
             _paragraphes(dessin, seq["points"], MARGE, haut, LARGEUR - 2 * MARGE, bas - haut)
             if seq["type"] == "test" and seq.get("sous_titre") and not sous_titre:
-                dessin.text((MARGE, bas - 10), "Prérequis : " + seq["sous_titre"][:150], font=_police(28), fill=GRIS)
+                dessin.text((MARGE, bas - 10), seq["sous_titre"][:165], font=_police(28), fill=GRIS)
 
         dessin.text((MARGE, HAUTEUR - 70), sujet, font=_police(26), fill=GRIS)
         repere = f"{numero} / {total}"
@@ -227,17 +310,24 @@ def diapositive(seq: dict, numero: int, total: int, sujet: str, dossier: Path, s
 #   windows  voix SAPI installées sur le poste (Hortense…), par PowerShell.
 #   espeak   espeak-ng (Linux), rudimentaire.
 # DOCUMENTATION_VOIX : auto (piper, sinon windows, sinon espeak), piper, edge, windows, espeak ou aucune.
-# DOCUMENTATION_VOIX_NOM : la voix voulue (ex. fr_FR-tom-medium, fr-FR-HenriNeural, Hortense).
+# DOCUMENTATION_VOIX_NOM : la ou les voix voulues, séparées par des virgules ; celle de la langue du document est
+#   retenue (ex. « fr_FR-tom-medium, en_GB-alba-medium » ou « fr-FR-HenriNeural, en-US-GuyNeural », Hortense).
+#   Sans voix de cette langue dans la liste, la voix par défaut de la langue.
+# La voix suit toujours la langue du document : un texte anglais n'est jamais lu par une voix française.
 
 PIPER_DEFAUT = "fr_FR-siwis-medium"
 EDGE_DEFAUT = "fr-FR-DeniseNeural"
-VOIX_PIPER = ["fr_FR-siwis-medium", "fr_FR-tom-medium", "fr_FR-upmc-medium", "fr_FR-gilles-low"]
+VOIX_DEFAUT = {"piper": {"fr": PIPER_DEFAUT, "en": "en_US-lessac-medium"},
+               "edge": {"fr": EDGE_DEFAUT, "en": "en-US-AriaNeural"}}
+VOIX_PIPER = ["fr_FR-siwis-medium", "fr_FR-tom-medium", "fr_FR-upmc-medium", "fr_FR-gilles-low",
+              "en_US-lessac-medium", "en_US-ryan-medium", "en_GB-alba-medium", "en_GB-northern_english_male-medium"]
 VOIX_EDGE = ["fr-FR-DeniseNeural", "fr-FR-HenriNeural", "fr-FR-VivienneMultilingualNeural",
-             "fr-FR-RemyMultilingualNeural", "fr-FR-EloiseNeural"]
+             "fr-FR-RemyMultilingualNeural", "fr-FR-EloiseNeural",
+             "en-US-AriaNeural", "en-US-GuyNeural", "en-GB-SoniaNeural", "en-GB-RyanNeural"]
 MOTEURS = ["auto", "piper", "edge", "windows", "espeak", "aucune"]
-ESSAI = "Ceci est un essai de la voix utilisée pour les vidéos de documentation."
+ESSAI = LIBELLES["fr"]["essai"]
 
-_MOTEUR = {}        # (réglage, nom) -> (moteur, voix)
+_MOTEUR = {}        # (réglage, nom, langue) -> (moteur, voix)
 _PIPER = {}         # chemin du modèle -> PiperVoice chargé
 _DERNIERE_ERREUR = ""
 
@@ -261,6 +351,25 @@ def _reglage() -> tuple:
 
 # -- Piper (local) ----------------------------------------------------------------------------------------
 
+def _langue_du_nom(nom: str) -> str:
+    """« fr » pour fr_FR-tom-medium ou fr-FR-HenriNeural, « » pour un nom sans langue (Hortense) ; une voix
+    Edge multilingue convient à toutes les langues (« * »)."""
+    if "Multilingual" in nom:
+        return "*"
+    trouve = re.match(r"([a-z]{2})[_-][A-Z]{2}\b", nom)
+    return trouve.group(1) if trouve else ""
+
+
+def nom_pour(noms: str, lang: str) -> str:
+    """Dans DOCUMENTATION_VOIX_NOM (un nom ou plusieurs séparés par des virgules), la voix de cette langue ;
+    à défaut un nom sans langue (voix Windows, filtrée par langue ensuite) ; sinon « »."""
+    candidats = [n.strip() for n in str(noms or "").split(",") if n.strip()]
+    for n in candidats:
+        if _langue_du_nom(n) in (lang, "*"):
+            return n
+    return next((n for n in candidats if not _langue_du_nom(n)), "")
+
+
 def _url_piper(nom: str) -> str:
     """fr_FR-siwis-medium -> …/fr/fr_FR/siwis/medium/fr_FR-siwis-medium.onnx (dépôt officiel des voix Piper)."""
     langue, voix, qualite = nom.split("-", 2)
@@ -268,12 +377,26 @@ def _url_piper(nom: str) -> str:
             f"{qualite}/{nom}.onnx")
 
 
-def modele_piper(nom: str = "", telecharger: bool = True, journal=lambda m: None) -> Path | None:
-    """Chemin du modèle .onnx : DOCUMENTATION_VOIX_MODELE, sinon .cache/voix/<nom>.onnx, téléchargé au besoin."""
+def _langue_modele(chemin: str) -> str:
+    """Langue d'un modèle Piper d'après son .onnx.json (« » si illisible)."""
+    import json
+    try:
+        donnees = json.loads(Path(chemin + ".json").read_text(encoding="utf-8"))
+        return str((donnees.get("language") or {}).get("code") or donnees.get("espeak", {}).get("voice", ""))[:2]
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def modele_piper(nom: str = "", telecharger: bool = True, journal=lambda m: None, lang: str = "fr") -> Path | None:
+    """Chemin du modèle .onnx : DOCUMENTATION_VOIX_MODELE s'il parle cette langue, sinon .cache/voix/<nom>.onnx,
+    téléchargé au besoin."""
     impose = config.secret("DOCUMENTATION_VOIX_MODELE")
-    if impose:
-        return Path(impose) if Path(impose).is_file() and Path(impose + ".json").is_file() else None
-    nom = nom or PIPER_DEFAUT
+    if impose and Path(impose).is_file() and Path(impose + ".json").is_file() \
+            and _langue_modele(impose) in (lang, ""):
+        return Path(impose)
+    if impose and lang == "fr":
+        return None
+    nom = nom or VOIX_DEFAUT["piper"][lang]
     if nom.count("-") < 2:
         return None
     dossier = config.CACHE / "voix"
@@ -376,10 +499,10 @@ def _script_sapi() -> Path:
     return chemin
 
 
-def _commande_sapi(texte: str = "", sortie: str = "", voulue: str = "") -> list:
+def _commande_sapi(texte: str = "", sortie: str = "", voulue: str = "", lang: str = "fr") -> list:
     """Commande PowerShell ; seuls les paramètres renseignés sont passés (un argument vide est mal reçu)."""
     commande = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(_script_sapi())]
-    for nom, valeur in (("-texte", texte), ("-sortie", sortie), ("-voulue", voulue)):
+    for nom, valeur in (("-texte", texte), ("-sortie", sortie), ("-voulue", voulue), ("-langue", lang)):
         if valeur:
             commande += [nom, valeur]
     return commande
@@ -391,10 +514,10 @@ def _fichier_texte(texte: str) -> str:
         return f.name
 
 
-def _sapi(texte: str, sortie: Path, voix: str) -> bool:
+def _sapi(texte: str, sortie: Path, voix: str, lang: str = "fr") -> bool:
     source = _fichier_texte(texte)
     try:
-        return _executer(_commande_sapi(source, str(sortie), voix)).returncode == 0
+        return _executer(_commande_sapi(source, str(sortie), voix, lang)).returncode == 0
     finally:
         os.unlink(source)
 
@@ -409,31 +532,31 @@ def _espeak(texte: str, sortie: Path, voix: str) -> bool:
 
 # -- Choix du moteur --------------------------------------------------------------------------------------
 
-def _disponible(moteur: str, nom: str, journal) -> tuple | None:
-    """(moteur, voix) si ce moteur peut parler français sur ce poste, sinon None."""
+def _disponible(moteur: str, nom: str, journal, lang: str = "fr") -> tuple | None:
+    """(moteur, voix) si ce moteur peut parler cette langue sur ce poste, sinon None."""
     global _DERNIERE_ERREUR
     try:
         if moteur == "piper":
             import piper  # noqa: F401
-            if nom and not nom.startswith("fr_") and not config.secret("DOCUMENTATION_VOIX_MODELE"):
+            if _langue_du_nom(nom) != lang:
                 nom = ""
-            modele = modele_piper(nom, journal=journal)
+            modele = modele_piper(nom, journal=journal, lang=lang)
             return ("piper", modele.stem) if modele else None
         if moteur == "edge":
             import edge_tts  # noqa: F401
-            voix = nom if nom.endswith("Neural") else EDGE_DEFAUT
+            voix = nom if nom.endswith("Neural") else VOIX_DEFAUT["edge"][lang]
             essai = Path(tempfile.gettempdir()) / "odatio_essai_edge.wav"
-            if _edge("Bonjour.", essai, voix):   # le service en ligne répond-il ?
+            if _edge(LIBELLES[lang]["bonjour"], essai, voix):   # le service en ligne répond-il ?
                 essai.unlink(missing_ok=True)
                 return ("edge", voix)
             _DERNIERE_ERREUR = "le service de voix en ligne de Microsoft est injoignable."
             return None
         if moteur == "windows" and platform.system() == "Windows":
-            r = _executer(_commande_sapi(voulue=nom if not nom.startswith(("fr_", "fr-")) else ""), delai=60)
+            r = _executer(_commande_sapi(voulue=nom if not _langue_du_nom(nom) else "", lang=lang), delai=60)
             if r.returncode == 0 and r.stdout.strip():
                 return ("windows", r.stdout.strip().splitlines()[-1])
         if moteur == "espeak" and shutil.which("espeak-ng"):
-            return ("espeak", "fr")
+            return ("espeak", lang)
     except ImportError:
         _DERNIERE_ERREUR = {"piper": "le paquet piper-tts n'est pas installé (pip install piper-tts).",
                             "edge": "le paquet edge-tts n'est pas installé (pip install edge-tts)."}.get(moteur, "")
@@ -442,23 +565,24 @@ def _disponible(moteur: str, nom: str, journal) -> tuple | None:
     return None
 
 
-def moteur_voix(journal=lambda m: None) -> tuple:
-    """(moteur, voix) retenus selon DOCUMENTATION_VOIX, ou ("", "") pour une vidéo muette."""
-    demande, nom = _reglage()
-    if (demande, nom) in _MOTEUR:
-        return _MOTEUR[(demande, nom)]
+def moteur_voix(journal=lambda m: None, lang: str = "fr") -> tuple:
+    """(moteur, voix) retenus selon DOCUMENTATION_VOIX pour cette langue, ou ("", "") pour une vidéo muette."""
+    demande, noms = _reglage()
+    nom = nom_pour(noms, lang)
+    if (demande, nom, lang) in _MOTEUR:
+        return _MOTEUR[(demande, nom, lang)]
     choix = ("", "")
     if demande != "aucune":
         ordre = ["piper", "windows", "espeak"] if demande == "auto" else [demande, "piper", "windows", "espeak"]
         for moteur in dict.fromkeys(ordre):
-            trouve = _disponible(moteur, nom if moteur == demande or demande == "auto" else "", journal)
+            trouve = _disponible(moteur, nom if moteur == demande or demande == "auto" else "", journal, lang)
             if trouve:
                 choix = trouve
                 break
             if moteur == demande:
                 journal(f"Voix « {demande} » indisponible : {_DERNIERE_ERREUR or 'non installée sur ce poste.'} "
                         f"Repli sur une autre voix.")
-    _MOTEUR[(demande, nom)] = choix
+    _MOTEUR[(demande, nom, lang)] = choix
     return choix
 
 
@@ -467,18 +591,18 @@ def oublier_moteur() -> None:
     _MOTEUR.clear()
 
 
-def synthetiser(texte: str, sortie: Path, moteur: tuple | None = None) -> bool:
+def synthetiser(texte: str, sortie: Path, moteur: tuple | None = None, lang: str = "fr") -> bool:
     """Écrit la narration dans un fichier WAV avec le moteur retenu ; False si la synthèse échoue."""
-    moteur, voix = moteur or moteur_voix()
+    moteur, voix = moteur or moteur_voix(lang=lang)
     if not moteur:
         return False
     try:
         if moteur == "piper":
-            ok = _piper(texte, sortie, modele_piper(voix, telecharger=False) or Path(""))
+            ok = _piper(texte, sortie, modele_piper(voix, telecharger=False, lang=lang) or Path(""))
         elif moteur == "edge":
             ok = _edge(texte, sortie, voix)
         elif moteur == "windows":
-            ok = _sapi(texte, sortie, voix) or _sapi(texte, sortie, "")
+            ok = _sapi(texte, sortie, voix, lang) or _sapi(texte, sortie, "", lang)
         else:
             ok = _espeak(texte, sortie, voix)
         return bool(ok) and sortie.exists() and sortie.stat().st_size > 1000
@@ -486,13 +610,13 @@ def synthetiser(texte: str, sortie: Path, moteur: tuple | None = None) -> bool:
         return False
 
 
-def essai_voix(sortie: Path, journal=lambda m: None) -> tuple:
+def essai_voix(sortie: Path, journal=lambda m: None, lang: str = "fr") -> tuple:
     """Synthétise une phrase d'essai : (ok, description de la voix ou de l'échec)."""
     oublier_moteur()
-    moteur = moteur_voix(journal)
+    moteur = moteur_voix(journal, lang)
     if not moteur[0]:
-        return False, _DERNIERE_ERREUR or "Aucune voix française disponible sur ce poste."
-    if not synthetiser(ESSAI, sortie, moteur):
+        return False, _DERNIERE_ERREUR or f"Aucune voix {LIBELLES[lang]['adjectif']} disponible sur ce poste."
+    if not synthetiser(LIBELLES[lang]["essai"], sortie, moteur, lang):
         return False, f"La voix {moteur[1]} ({moteur[0]}) n'a pas pu parler."
     return True, f"{moteur[1]} ({moteur[0]})"
 
@@ -518,7 +642,6 @@ def _ffmpeg() -> str:
 
 def _morceaux(texte: str, longueur: int = 110) -> list:
     """Découpe une narration en sous-titres courts, aux fins de phrase ou aux virgules."""
-    import re
     phrases = re.split(r"(?<=[.!?;:])\s+", texte.strip())
     morceaux = []
     for phrase in phrases:
@@ -554,9 +677,10 @@ def produire(document: dict, dossier: Path, sortie: Path, sujet: str = "", journ
     ffmpeg = _ffmpeg()
     sujet = sujet or document.get("titre", "")
     suite = sequences(document)
-    moteur, voix = moteur_voix(journal)
-    journal(f"Voix : {voix} ({moteur})." if moteur else "Aucune voix française disponible : vidéo muette, narration en "
-                                             "sous-titres.")
+    lang = langue(document)
+    moteur, voix = moteur_voix(journal, lang)
+    journal(f"Voix : {voix} ({moteur})." if moteur else f"Aucune voix {LIBELLES[lang]['adjectif']} disponible : "
+                                                        f"vidéo muette, narration en sous-titres.")
     travail = Path(dossier) / "_rendu"
     if travail.exists():
         shutil.rmtree(travail)
@@ -567,7 +691,7 @@ def produire(document: dict, dossier: Path, sortie: Path, sujet: str = "", journ
             journal(f"Diapositive {i}/{len(suite)} : {seq['titre'][:60]}")
             morceaux = _morceaux(seq["narration"])
             audio = travail / f"{i:02d}.wav"
-            if moteur and synthetiser(seq["narration"], audio, (moteur, voix)):
+            if moteur and synthetiser(seq["narration"], audio, (moteur, voix), lang):
                 duree = _duree_wav(audio) + PAUSE
                 image = travail / f"{i:02d}.png"
                 diapositive(seq, i, len(suite), sujet, dossier).save(image)
@@ -603,11 +727,11 @@ def produire(document: dict, dossier: Path, sortie: Path, sujet: str = "", journ
         if r.returncode != 0:
             raise VideoErreur(f"Assemblage impossible : {r.stderr.strip()[-400:]}")
         r = _executer([ffmpeg, "-y", "-loglevel", "error", "-i", str(assemblee), "-i", str(sous_titres),
-                       "-map", "0", "-map", "1", "-c", "copy", "-c:s", "mov_text", "-metadata:s:s:0", "language=fre",
+                       "-map", "0", "-map", "1", "-c", "copy", "-c:s", "mov_text", "-metadata:s:s:0", f"language={LIBELLES[lang]['srt']}",
                        "-movflags", "+faststart", str(sortie)])
         if r.returncode != 0:
             shutil.copyfile(assemblee, sortie)
     finally:
         shutil.rmtree(travail, ignore_errors=True)
     journal(f"Vidéo prête : {t / 60:.1f} min.")
-    return {"video": sortie, "sous_titres": sous_titres, "voix": voix if moteur else "", "duree": t}
+    return {"video": sortie, "sous_titres": sous_titres, "voix": voix if moteur else "", "duree": t, "langue": lang}

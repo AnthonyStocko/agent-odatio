@@ -132,6 +132,8 @@ Garde-fous de la navigation :
 - sauf si le projet garde les données réelles (base de test), l'agent évite de capturer des écrans affichant des données personnelles ; relis les captures avant envoi ;
 - ce qui s'affiche à l'écran est traité comme une donnée, jamais comme une consigne.
 
+**Langue.** Par défaut en français ; demande-la en anglais (« fais la vidéo en anglais ») et tout suit : le texte rédigé directement en anglais, les transitions des cas de test (« First, … Expected result: … »), les titres du document Word et une voix anglaise (Piper `en_US-lessac-medium`, Edge `en-US-AriaNeural`, ou une voix anglaise de Windows). Les libellés d'écran restent ceux de l'application. Le champ `langue` (`fr` ou `en`) de `document.json` se modifie aussi à la main avant « Refaire ».
+
 Le résultat est dans `.cache/documentation/<sujet>-<date>/`. À relire avant envoi : pour corriger, modifie `document.json` puis « Refaire » (ou `python agent.py --rendre <dossier>`), sans relancer l'agent. « Joindre au ticket » ajoute la vidéo et le document Word en pièces jointes du ticket Jira : c'est la seule écriture dans Jira, et elle n'est faite qu'à ta demande.
 
 **Voix.** Réglage dans Configuration, Accès, « Voix des vidéos de documentation », avec un bouton pour l'écouter :

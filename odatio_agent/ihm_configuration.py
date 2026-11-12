@@ -429,7 +429,9 @@ def _onglet_acces() -> None:
         nom_voix = c2.text_input("Nom de la voix (facultatif)", value=nom_actuel,
                                  placeholder=f"{video.PIPER_DEFAUT} ou {video.EDGE_DEFAUT}",
                                  help="Piper : " + ", ".join(video.VOIX_PIPER) + ". Edge : " + ", ".join(video.VOIX_EDGE)
-                                      + ". Windows : une partie du nom (Hortense).")
+                                      + ". Windows : une partie du nom (Hortense). Plusieurs voix séparées par "
+                                        "des virgules (une française, une anglaise) : la vidéo prend celle de la "
+                                        "langue du document.")
         st.caption("Piper : rien ne sort du poste ; sa voix (60 Mo) est téléchargée une fois. Microsoft Edge : le "
                    "texte lu (la narration, sans secret ni donnée nominative) est envoyé au service de voix en "
                    "ligne de Microsoft ; à ne choisir que si c'est acceptable pour toi.")

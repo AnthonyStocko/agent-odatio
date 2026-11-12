@@ -95,7 +95,7 @@ def rendre(dossier: Path, sans_video: bool = False) -> int:
         if resultat.get(nom):
             print(f"  {Path(resultat[nom]).name}")
     if not sans_video and not resultat.get("voix"):
-        print(f"{GRIS}Aucune voix française trouvée : vidéo muette, narration en sous-titres.{FIN}")
+        print(f"{GRIS}Aucune voix trouvée pour la langue du document : vidéo muette, narration en sous-titres.{FIN}")
     return 0
 
 

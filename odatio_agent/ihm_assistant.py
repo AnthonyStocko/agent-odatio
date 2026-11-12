@@ -172,7 +172,7 @@ def _afficher_documentation() -> None:
         st.video(str(fichiers["video"]), subtitles={"Français": str(fichiers["sous_titres"])}
                  if fichiers.get("sous_titres") else None)
         if not doc.get("voix"):
-            st.caption("Aucune voix française installée sur ce poste : la narration est en sous-titres.")
+            st.caption("Aucune voix de la langue du document sur ce poste : la narration est en sous-titres.")
     with st.expander("Document écrit"):
         st.markdown(fichiers["markdown"].read_text(encoding="utf-8"))
     st.caption("À relire avant envoi. Pour corriger : modifie document.json dans "

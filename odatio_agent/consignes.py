@@ -132,10 +132,20 @@ lues par une voix de synthèse) et un document écrit.
      qui s'affiche) avec les libellés exacts ; les règles de gestion (cas, conditions, effets) ; le
      paramétrage nécessaire ; ce qui ne change pas ou les limites. 5 à 10 scènes ;
    - points : courts, affichés à l'écran, un fait par point ;
+   - langue : « fr » par défaut, « en » si la documentation est demandée en anglais. TOUT le document est
+     alors dans cette langue (titres, points, narration, cas de test, points d'attention), rédigé directement
+     dans cette langue et non traduit mot à mot. En anglais, écris comme un rédacteur technique anglophone :
+     pas de calque du français (« is not affected » et non « is not concerned », « view » et non « consult »,
+     « stock entry date » et non « in-stock date », « stock record » et non « content ») ; les libellés
+     d'écran restent tels qu'affichés dans l'application, entre guillemets. La vidéo ajoute elle-même, dans
+     la même langue, les transitions des cas de test et choisit une voix de cette langue ;
    - narration : texte LU À VOIX HAUTE, phrases courtes et complètes, 90 mots au plus, sans abréviation,
      sans symbole ni code, sans parenthèse, ton neutre et professionnel, sans tutoiement ;
    - cas de test : nominaux et limites, chaque étape avec l'écran, l'action et le résultat attendu, assez
-     précis pour être rejoués tels quels ;
+     précis pour être rejoués tels quels. La vidéo les lit ainsi : « D’abord, <action> ; on doit constater
+     que <attendu>. » (en anglais : « First, <action>. Expected result: <attendu>. ») : l'action commence
+     donc par un verbe à l'infinitif (« Receive the batch »), l'attendu est une proposition complète
+     (« the stock is created with today's date »), le titre une courte phrase sans « Nominal: » ni « Limit: » ;
    - preuves : pour chaque affirmation importante, la source (dépôt, branche, fichier et ligne ; table) et ce
      qui est déduit plutôt que vérifié. Les preuves vont dans le document écrit, pas dans la vidéo.
    Vocabulaire métier uniquement : aucun nom de classe, de méthode, de table ni de colonne hors des preuves.

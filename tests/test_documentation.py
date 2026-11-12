@@ -71,6 +71,81 @@ class TestValidation(AvecDossierTemporaire):
         self.assertEqual(types, ["titre", "scene", "scene", "scene", "test", "scene", "fin"])
 
 
+DOCUMENT_EN = {
+    "langue": "en",
+    "titre": "Batch history and the FIFO rule",
+    "resume": "The first stock entry date of each product and batch pair is recorded and reused.",
+    "scenes": [
+        {"titre": "The need", "points": ["Old batches looked recent"],
+         "narration": "On receipt, the batch was given today's date as its stock entry date."},
+        {"titre": "What changes", "points": ["The first date is recorded"],
+         "narration": "The first stock entry date of each product and batch pair is now recorded."},
+        {"titre": "Business rules", "points": ["Products without batches are not affected"],
+         "narration": "Products without batches are not affected."},
+    ],
+    "cas_de_test": [{"titre": "Receive a new batch", "prerequis": "A batch-managed product.",
+                     "etapes": [{"ecran": "Dossiers d'arrivage", "action": "Process the shipment",
+                                 "attendu": "the stock is created with today's date"},
+                                {"ecran": "Historique des lots", "action": "Filter on Lot",
+                                 "attendu": "one line with today's date"}]}],
+    "points_attention": ["Screen labels are in French"],
+}
+
+
+class TestLangue(AvecDossierTemporaire):
+    def test_langue_du_document(self):
+        self.assertEqual(video.langue(DOCUMENT), "fr")
+        self.assertEqual(video.langue(DOCUMENT_EN), "en")
+        sans_champ = {k: v for k, v in DOCUMENT_EN.items() if k != "langue"}
+        self.assertEqual(video.langue(sans_champ), "en")  # déduite du texte
+
+    def test_video_anglaise_sans_francais(self):
+        lu = " ".join(s["narration"] for s in video.sequences(DOCUMENT_EN))
+        for francais in ("Cas de test", "Prérequis", "D’abord", "Ensuite", "on doit constater", "Points d'attention",
+                         "Le document joint"):
+            self.assertNotIn(francais, lu)
+        self.assertIn("Test case 1. Receive a new batch. Prerequisites: A batch-managed product. First, process "
+                      "the shipment. Expected result: The stock is created with today's date. Next, filter on Lot.",
+                      lu)
+
+    def test_video_francaise_inchangee(self):
+        test = [s for s in video.sequences(DOCUMENT) if s["type"] == "test"][0]
+        self.assertIn("D’abord, cliquer sur Libérer ; on doit constater que la vague passe au statut Libérée.",
+                      test["narration"])
+        self.assertEqual(test["sous_titre"], "Prérequis : Une vague planifiée")
+
+    def test_document_ecrit_en_anglais(self):
+        dossier = documentation.nouveau_dossier("ODA-2")
+        documentation.enregistrer(dossier, copy.deepcopy(DOCUMENT_EN))
+        texte = documentation.produire(dossier, "ODA-2", video_aussi=False, journal=lambda _: None)["markdown"] \
+            .read_text(encoding="utf-8")
+        self.assertIn("## Test cases", texte)
+        self.assertIn("| # | Screen | Action | Expected result |", texte)
+        self.assertNotIn("Prérequis", texte)
+
+    def test_langue_inconnue_refusee(self):
+        document = copy.deepcopy(DOCUMENT_EN)
+        document["langue"] = "de"
+        self.assertTrue(documentation.valider(document, []))
+
+    def test_voix_de_la_langue(self):
+        self.assertEqual(video.nom_pour("fr_FR-tom-medium, en_GB-alba-medium", "en"), "en_GB-alba-medium")
+        self.assertEqual(video.nom_pour("fr_FR-tom-medium, en_GB-alba-medium", "fr"), "fr_FR-tom-medium")
+        self.assertEqual(video.nom_pour("fr-FR-HenriNeural", "en"), "")          # voix anglaise par défaut
+        self.assertEqual(video.nom_pour("fr-FR-RemyMultilingualNeural", "en"), "fr-FR-RemyMultilingualNeural")
+        self.assertEqual(video.nom_pour("Hortense", "en"), "Hortense")           # Windows filtre par langue
+
+    def test_moteur_par_langue(self):
+        vus = []
+        with mock.patch.dict(config._SECRETS, {"DOCUMENTATION_VOIX": "piper"}, clear=True), \
+                mock.patch.object(video, "_disponible", side_effect=lambda m, n, j, l: vus.append(l) or (m, l)):
+            video.oublier_moteur()
+            self.assertEqual(video.moteur_voix(lang="en"), ("piper", "en"))
+            self.assertEqual(video.moteur_voix(lang="fr"), ("piper", "fr"))
+        video.oublier_moteur()
+        self.assertEqual(vus, ["en", "fr"])
+
+
 class TestOutilsDeSession(AvecDossierTemporaire):
     """La documentation se demande aussi dans la conversation : les deux outils sont toujours présents."""
 
