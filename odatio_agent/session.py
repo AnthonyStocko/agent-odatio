@@ -48,8 +48,9 @@ class Session:
                  dossier_documentation: Path | None = None):
         """reprise : identifiant d'une conversation précédente à poursuivre (Bilan.session_id), utilisé par
         l'IHM qui ouvre une session par question. ticket : tâche Jira à tester (outils.jira_ticket), donnée
-        à l'agent comme contexte. dossier_documentation : dossier déjà préparé (captures d'écran déposées)
-        pour la documentation ; sinon documentation_demarrer en crée un quand l'utilisateur en demande une."""
+        à l'agent comme contexte. dossier_documentation : dossier déjà préparé (captures d'écran déposées), ou
+        documentation déjà enregistrée à poursuivre (documentation_demarrer renvoie alors le document existant) ;
+        sinon documentation_demarrer en crée un quand l'utilisateur en demande une."""
         self.profil, self.reglages, self.ticket = profil, reglages, ticket
         self.requetes_base, self.generation, self.fichiers = 0, False, []
         self.dossier_fourni = Path(dossier_documentation) if dossier_documentation else None
@@ -211,20 +212,24 @@ class Session:
         @tool("documentation_demarrer", "À appeler UNE fois, avant toute recherche, quand l'utilisateur demande une "
               "documentation, une vidéo, une démo, un tutoriel ou un support de présentation d'une fonctionnalité "
               "ou d'une tâche. Renvoie la marche à suivre et le format du document. Jamais pour une simple question.",
-              {"type": "object", "properties": {"sujet": {"type": "string",
-                                                          "description": "la fonctionnalité, en quelques mots"}},
+              {"type": "object", "properties": {
+                  "sujet": {"type": "string", "description": "la fonctionnalité, en quelques mots"},
+                  "nouvelle": {"type": "boolean", "description": "true pour une documentation sur un AUTRE sujet "
+                               "que celle déjà en cours (sinon la documentation en cours est poursuivie)"}},
                "required": ["sujet"]})
         async def documentation_demarrer(args):
             sujet = str(args.get("sujet", "")).strip() or "documentation"
             titre = f"{self.ticket['cle']} — {self.ticket['titre']}" if self.ticket else sujet
-            if self.dossier_documentation is None:
+            if args.get("nouvelle") or self.dossier_documentation is None:
                 self.dossier_documentation = documentation.nouveau_dossier(self.ticket["cle"] if self.ticket else sujet)
-            (self.dossier_documentation / "sujet.txt").write_text(titre, encoding="utf-8")
+            dossier = self.dossier_documentation
+            if not (dossier / "sujet.txt").exists():   # documentation poursuivie : son sujet est gardé
+                (dossier / "sujet.txt").write_text(titre, encoding="utf-8")
             self.documentation_ouverte = True
             outils.journal(self.profil, "documentation_demarrer", {"sujet": sujet[:200]})
-            return _texte(consignes.documentation(documentation.captures(self.dossier_documentation),
-                                                  self.plafond_base(), ecran.decrire(self.profil),
-                                                  self.profil.donnees_reelles))
+            return _texte(consignes.documentation(documentation.captures(dossier), self.plafond_base(),
+                                                  ecran.decrire(self.profil), self.profil.donnees_reelles,
+                                                  documentation.existant(dossier)))
 
         @tool("documentation_enregistrer", "Enregistre la documentation fonctionnelle (document + scénario de la "
               "vidéo) destinée au consultant, après documentation_demarrer et une fois l'enquête terminée. La "
@@ -335,7 +340,7 @@ class Session:
         réponse et les outils utilisés au fil de l'eau."""
         self.requetes_base, self.generation, self.fichiers = 0, False, []
         self.document, self.documentation_ouverte = None, False
-        self.dossier_documentation = self.dossier_fourni   # un nouveau dossier par documentation demandée
+        self.dossier_documentation = self.dossier_fourni   # documentation en cours, ou nouveau dossier
         await self.client.query(question)
         bilan = Bilan(cout_usd=None, tours=0, erreur=False)
         async for message in self.client.receive_response():

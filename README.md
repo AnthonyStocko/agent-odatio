@@ -136,6 +136,8 @@ Garde-fous de la navigation :
 
 Le résultat est dans `.cache/documentation/<sujet>-<date>/`. À relire avant envoi : pour corriger, modifie `document.json` puis « Refaire » (ou `python agent.py --rendre <dossier>`), sans relancer l'agent. « Joindre au ticket » ajoute la vidéo et le document Word en pièces jointes du ticket Jira : c'est la seule écriture dans Jira, et elle n'est faite qu'à ta demande.
 
+**Reprendre et poursuivre.** Chaque conversation est enregistrée après chaque réponse dans `.cache/conversations/<projet>/`. Dans la barre latérale, « Reprendre une conversation » la recharge là où elle s'était arrêtée : l'agent retrouve tout son contexte (fichiers lus, requêtes, conclusions) ; si ce fil n'est plus disponible (autre compte Claude, autre poste), il repart avec le récapitulatif des échanges. Dans le bloc de documentation, « Rouvrir une documentation » recharge une documentation déjà produite avec la conversation qui l'a produite ; choisis alors « Poursuivre » et dis ce qu'il faut changer (ajouter un cas de test, des captures, corriger une scène, la faire en anglais) : l'agent repart du document existant, garde le reste, et la vidéo est refaite dans le même dossier. Tu peux aussi le demander directement dans la conversation. Chaque version précédente de `document.json` est gardée dans `versions/`. En ligne de commande : `--conversations`, `--reprendre <id>`, `--poursuivre <dossier> --question "…"`.
+
 **Voix.** Réglage dans Configuration, Accès, « Voix des vidéos de documentation », avec un bouton pour l'écouter :
 
 | Voix | Qualité | Confidentialité |

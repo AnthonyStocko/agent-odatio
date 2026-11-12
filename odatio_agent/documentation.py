@@ -6,6 +6,7 @@ nominative, puis le rend en Markdown et en Word ; la vidéo est produite par vid
 
 Tout est écrit dans .cache/documentation/<sujet>-<date>/ :
   document.json     le document de l'agent (modifiable à la main, puis « python agent.py --rendre <dossier> »)
+  versions/         les versions précédentes de document.json, quand la documentation est poursuivie
   captures/         captures d'écran fournies par l'utilisateur, citées par les scènes
   <sujet>.md / .docx / .mp4 / .srt
 
@@ -74,6 +75,14 @@ class DocumentationErreur(Exception):
     pass
 
 
+def question_suite(demande: str) -> str:
+    """Demande adressée à l'agent pour poursuivre une documentation déjà enregistrée (dossier fourni)."""
+    demande = demande.strip() or "complète-la et corrige ce qui doit l'être"
+    return (f"Poursuis la documentation déjà enregistrée : appelle documentation_demarrer (le document existant t'est "
+            f"renvoyé), applique la demande suivante en gardant tout le reste, puis documentation_enregistrer avec le "
+            f"document complet. Demande : {demande}")
+
+
 def question(sujet: str, ticket: dict | None) -> str:
     """Demande adressée à l'agent par le bloc de l'IHM et par --documenter."""
     cible = f"la tâche {ticket['cle']} ({ticket['titre']})" if ticket else f"la fonctionnalité suivante : {sujet}"
@@ -118,6 +127,42 @@ def copier_captures(dossier: Path, source: Path) -> list:
         if fichier.suffix.lower() in EXTENSIONS_CAPTURES:
             noms.append(ajouter_capture(dossier, fichier.name, fichier.read_bytes()))
     return noms
+
+
+def lister(limite: int = 50) -> list:
+    """Documentations déjà enregistrées : [{dossier, sujet, date, video}] de la plus récente à la plus ancienne."""
+    racine = config.CACHE / "documentation"
+    resultats = []
+    for dossier in racine.iterdir() if racine.is_dir() else []:
+        fichier = dossier / "document.json"
+        if not fichier.is_file():
+            continue
+        try:
+            date = json.loads(fichier.read_text(encoding="utf-8")).get("_genere_le", "")
+        except (OSError, ValueError):
+            continue
+        date = date or datetime.fromtimestamp(fichier.stat().st_mtime).isoformat(timespec="seconds")
+        resultats.append({"dossier": str(dossier), "sujet": sujet(dossier), "date": date,
+                          "video": bool(fichiers(dossier).get("video"))})
+    return sorted(resultats, key=lambda r: r["date"], reverse=True)[:limite]
+
+
+def fichiers(dossier: Path) -> dict:
+    """Fichiers déjà produits dans un dossier : {markdown, word, video, sous_titres} (chemins existants)."""
+    base = Path(dossier) / _slug(sujet(dossier))
+    trouves = {"markdown": base.with_suffix(".md"), "word": base.with_suffix(".docx"),
+               "video": base.with_suffix(".mp4"), "sous_titres": base.with_suffix(".srt")}
+    return {cle: chemin for cle, chemin in trouves.items() if chemin.is_file()}
+
+
+def existant(dossier: Path) -> dict | None:
+    """Le document déjà enregistré dans ce dossier (sans les champs internes), ou None."""
+    fichier = Path(dossier) / "document.json"
+    try:
+        document = json.loads(fichier.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return {k: v for k, v in document.items() if not k.startswith("_")} if isinstance(document, dict) else None
 
 
 def captures(dossier: Path) -> list:
@@ -194,6 +239,11 @@ def enregistrer(dossier: Path, document: dict) -> dict:
         raise DocumentationErreur("Document refusé, corrige puis renvoie-le en entier :\n- " + "\n- ".join(erreurs))
     document = json.loads(mask_secrets(json.dumps(document, ensure_ascii=False))[0])
     document["_genere_le"] = datetime.now().isoformat(timespec="seconds")
+    precedent = Path(dossier) / "document.json"
+    if precedent.exists():  # documentation poursuivie : la version précédente est gardée
+        versions = Path(dossier) / "versions"
+        versions.mkdir(exist_ok=True)
+        shutil.copy2(precedent, versions / f"document-{datetime.now():%Y%m%d-%H%M%S-%f}.json")
     (Path(dossier) / "document.json").write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
     return document
 

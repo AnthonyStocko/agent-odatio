@@ -10,6 +10,10 @@ Agent fonctionnel Odatio — conversation en ligne de commande.
                                                   documentation et vidéo de la tâche pour le consultant
   python agent.py --profil local --documenter "La libération des vagues"   idem, sur une fonctionnalité
   python agent.py --rendre .cache/documentation/<dossier>    refait document et vidéo après correction
+  python agent.py --profil local --conversations          conversations enregistrées (les plus récentes)
+  python agent.py --profil local --reprendre <id>         reprend une conversation là où elle s'était arrêtée
+  python agent.py --profil local --poursuivre .cache/documentation/<dossier> [--question "ajoute un cas…"]
+                                                  poursuit une documentation (avec sa conversation si connue)
 En conversation aussi, « fais-moi une vidéo de cette fonctionnalité » produit la documentation.
 
 En conversation : /nouveau repart d'une conversation vide, /quitter (ou Ctrl+D) termine.
@@ -22,7 +26,7 @@ import sys
 
 from pathlib import Path
 
-from odatio_agent import config, documentation, outils, sources, video
+from odatio_agent import config, documentation, historique, outils, sources, video
 from odatio_agent.etapes import resumer
 from odatio_agent.session import Session
 
@@ -48,18 +52,64 @@ async def _poser(session: Session, question: str, racines: list, monter: bool = 
 
 
 async def converser(profil: config.Profil, reglages: config.Reglages, question: str, maj: bool,
-                    ticket: dict | None = None) -> int:
+                    ticket: dict | None = None, conversation: dict | None = None,
+                    dossier_documentation: Path | None = None) -> int:
+    """conversation : conversation de l'historique à reprendre ; dossier_documentation : documentation à
+    poursuivre. Chaque échange est enregistré dans l'historique du profil."""
     prets = sources.preparer(profil, mettre_a_jour=maj)
     logs = sources.dossiers_logs(profil)
     racines = [chemin for _, chemin in prets] + logs
     utilisateur = getpass.getuser()
+    suivi = dict(conversation or {})
+    suivi.setdefault("messages", [])
+    ticket = suivi.get("ticket") or ticket
+    suivi["ticket"] = ticket
+    if dossier_documentation:
+        suivi["documentation"] = {"dossier": str(dossier_documentation),
+                                  "sujet": documentation.sujet(dossier_documentation)}
 
-    session = Session(profil, prets, logs, reglages, utilisateur, ticket=ticket)
+    def nouvelle_session(reprise: str = "") -> Session:
+        return Session(profil, prets, logs, reglages, utilisateur, reprise=reprise, ticket=ticket,
+                       dossier_documentation=dossier_documentation)
+
+    async def poser(texte: str) -> None:
+        nonlocal session
+        envoye = texte
+        if suivi["messages"] and not suivi.get("reprise"):  # fil de l'agent perdu : récapitulatif
+            envoye = historique.recapitulatif(suivi["messages"], texte)
+        try:
+            bilan = await _poser(session, envoye, racines, monter=False)
+        except Exception:
+            if not suivi.get("reprise"):
+                raise
+            print(f"{GRIS}Le fil de cette conversation n'est plus disponible côté agent : reprise avec le "
+                  f"récapitulatif des échanges.{FIN}")
+            await session.fermer()
+            session, suivi["reprise"] = nouvelle_session(), ""
+            await session.ouvrir()
+            bilan = await _poser(session, historique.recapitulatif(suivi["messages"], texte), racines, monter=False)
+        suivi["reprise"] = bilan.session_id or suivi.get("reprise", "")
+        suivi["messages"] += [{"role": "user", "texte": texte},
+                              {"role": "assistant", "texte": bilan.reponse, "fichiers": bilan.fichiers,
+                               "documentation": bool(bilan.documentation)}]
+        if bilan.documentation:
+            suivi["documentation"] = bilan.documentation
+            rendre(Path(bilan.documentation["dossier"]))
+        suivi["id"] = historique.enregistrer(profil.nom, suivi)
+
+    session = nouvelle_session(suivi.get("reprise", ""))
     await session.ouvrir()
     try:
         if question:
-            await _poser(session, question, racines)
+            await poser(question)
+            print(f"{GRIS}Conversation {suivi['id']} : --reprendre {suivi['id']} pour la poursuivre.{FIN}")
             return 0
+        if suivi["messages"]:
+            print(f"{GRIS}Reprise de « {historique.titre(suivi['messages'], ticket)} » "
+                  f"({sum(m['role'] == 'user' for m in suivi['messages'])} question(s)).{FIN}")
+            dernier = next((m["texte"] for m in reversed(suivi["messages"]) if m["role"] == "assistant"), "")
+            if dernier:
+                print(f"{GRIS}Dernière réponse :{FIN}\n{dernier}\n")
         print(f"{GRAS}Agent Odatio — profil « {profil.nom} »{FIN} {GRIS}(/nouveau, /quitter){FIN}\n")
         while True:
             try:
@@ -73,12 +123,14 @@ async def converser(profil: config.Profil, reglages: config.Reglages, question: 
                 return 0
             if saisie == "/nouveau":
                 await session.fermer()
-                session = Session(profil, prets, logs, reglages, utilisateur, ticket=ticket)
+                dossier_documentation = None
+                suivi = {"messages": [], "ticket": ticket}
+                session = nouvelle_session()
                 await session.ouvrir()
                 print(f"{GRIS}Nouvelle conversation.{FIN}\n")
                 continue
             print()
-            await _poser(session, saisie, racines)
+            await poser(saisie)
     finally:
         await session.fermer()
 
@@ -116,6 +168,10 @@ async def documenter(profil: config.Profil, reglages: config.Reglages, sujet: st
         bilan = await _poser(session, documentation.question(sujet, ticket), racines, monter=False)
     finally:
         await session.fermer()
+    historique.enregistrer(profil.nom, {
+        "reprise": bilan.session_id, "ticket": ticket, "documentation": bilan.documentation,
+        "messages": [{"role": "user", "texte": f"Documentation : {titre}"},
+                     {"role": "assistant", "texte": bilan.reponse, "documentation": bool(bilan.documentation)}]})
     if not bilan.documentation:
         print(f"{ROUGE}L'agent n'a pas enregistré de document (étapes ou budget épuisés ?). Relance avec un plafond "
               f"plus haut, ou précise le sujet.{FIN}")
@@ -160,6 +216,10 @@ def main() -> int:
                         help="documentation et vidéo pour le consultant (de la tâche --ticket, ou du SUJET)")
     parser.add_argument("--captures", default="", help="dossier de captures d'écran à intégrer à la documentation")
     parser.add_argument("--sans-video", action="store_true", help="documentation écrite seulement")
+    parser.add_argument("--conversations", action="store_true", help="liste les conversations enregistrées")
+    parser.add_argument("--reprendre", default="", metavar="ID", help="reprend une conversation enregistrée")
+    parser.add_argument("--poursuivre", default="", metavar="DOSSIER",
+                        help="poursuit une documentation déjà produite (avec --question pour la demande)")
     parser.add_argument("--rendre", default="", metavar="DOSSIER",
                         help="refait document et vidéo d'un dossier de documentation (après correction de document.json)")
     args = parser.parse_args()
@@ -176,6 +236,22 @@ def main() -> int:
         profil = config.charger_profil(args.profil)
         if args.test:
             return tester(profil, not args.sans_maj)
+        if args.conversations:
+            for c in historique.lister(profil.nom):
+                doc = " [documentation]" if c["documentation"] else ""
+                print(f"{c['id']}  {historique.libelle_date(c['maj_le'])}  {c['titre']}{doc}")
+            return 0
+        conversation, dossier = None, None
+        if args.poursuivre:
+            dossier = Path(args.poursuivre)
+            if not (dossier / "document.json").is_file():
+                print(f"{ROUGE}Aucune documentation dans {dossier}.{FIN}")
+                return 2
+            conversation = historique.de_la_documentation(profil.nom, str(dossier))
+            if args.question:
+                args.question = documentation.question_suite(args.question)
+        if args.reprendre:
+            conversation = historique.charger(profil.nom, args.reprendre)
         ticket = outils.jira_ticket(args.ticket, profil) if args.ticket else None
         if ticket:
             print(f"{GRIS}Tâche {ticket['cle']} : {ticket['titre']}{FIN}")
@@ -185,7 +261,8 @@ def main() -> int:
                 return 2
             return asyncio.run(documenter(profil, config.reglages(), args.documenter.strip(), ticket,
                                           not args.sans_maj, args.captures, args.sans_video))
-        return asyncio.run(converser(profil, config.reglages(), args.question, not args.sans_maj, ticket))
+        return asyncio.run(converser(profil, config.reglages(), args.question, not args.sans_maj, ticket,
+                                     conversation, dossier))
     except (config.ConfigError, sources.SourceError, outils.OutilErreur) as e:
         print(f"{ROUGE}{e}{FIN}")
         return 2

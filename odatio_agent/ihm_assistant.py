@@ -5,6 +5,10 @@ fichiers d'interface générés (téléchargement et chemin, pour les intégrer 
 Chaque question ouvre une session de l'agent qui reprend la conversation précédente (resume) : rien ne reste
 en mémoire entre deux questions, ce qui convient au fonctionnement de Streamlit (le script est rejoué à chaque
 interaction).
+
+Chaque conversation est enregistrée après chaque réponse (historique.py) : la barre latérale permet d'en
+reprendre une ancienne, et le bloc de documentation de rouvrir une documentation déjà produite pour la
+poursuivre (ajouter un cas de test, des captures, corriger, traduire) avec la conversation qui l'a produite.
 """
 import asyncio
 import getpass
@@ -13,7 +17,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from . import config, documentation, outils, sources, video
+from . import config, documentation, historique, outils, sources, video
 from .etapes import resumer
 from .session import Session
 
@@ -27,6 +31,7 @@ def _etat():
     etat = st.session_state
     etat.setdefault("messages", [])       # [{"role", "texte", "etapes", "bilan", "fichiers"}]
     etat.setdefault("reprise", "")        # identifiant de la conversation en cours côté agent
+    etat.setdefault("conversation_id", "")  # identifiant dans l'historique (historique.py)
     etat.setdefault("profil_actif", "")
     etat.setdefault("preparation", {})    # profil -> (sources prêtes, dossiers de logs)
     etat.setdefault("ticket", None)       # {"cle", "titre", "texte"} de la tâche à tester
@@ -35,7 +40,50 @@ def _etat():
 
 
 def nouvelle_conversation() -> None:
-    st.session_state.messages, st.session_state.reprise = [], ""
+    etat = st.session_state
+    etat.messages, etat.reprise, etat.conversation_id, etat.documentation = [], "", "", None
+
+
+def _sauvegarder() -> None:
+    """Enregistre la conversation en cours dans l'historique du projet."""
+    etat = st.session_state
+    if not etat.messages or not etat.profil_actif:
+        return
+    doc = etat.documentation
+    etat.conversation_id = historique.enregistrer(etat.profil_actif, {
+        "id": etat.conversation_id, "reprise": etat.reprise, "ticket": etat.ticket, "messages": etat.messages,
+        "documentation": {"dossier": doc["dossier"], "sujet": doc["sujet"]} if doc else None})
+
+
+def _documentation_de(dossier: str) -> dict | None:
+    """État d'affichage d'une documentation déjà produite (fichiers présents dans son dossier)."""
+    if not (Path(dossier) / "document.json").is_file():
+        return None
+    return {"dossier": str(dossier), "sujet": documentation.sujet(Path(dossier)),
+            "fichiers": {k: str(v) for k, v in documentation.fichiers(Path(dossier)).items()}, "voix": None}
+
+
+def reprendre_conversation(identifiant: str) -> None:
+    """Recharge une conversation de l'historique : échanges, fil de l'agent, tâche et documentation."""
+    etat = st.session_state
+    conversation = historique.charger(etat.profil_actif, identifiant)
+    etat.messages = conversation.get("messages") or []
+    etat.reprise = conversation.get("reprise") or ""
+    etat.conversation_id = conversation["id"]
+    etat.ticket = conversation.get("ticket")
+    doc = conversation.get("documentation") or {}
+    etat.documentation = _documentation_de(doc["dossier"]) if doc.get("dossier") else None
+
+
+def ouvrir_documentation(dossier: str) -> None:
+    """Rouvre une documentation pour la poursuivre, avec la conversation qui l'a produite si elle est connue."""
+    etat = st.session_state
+    conversation = historique.de_la_documentation(etat.profil_actif, dossier)
+    if conversation:
+        reprendre_conversation(conversation["id"])
+    else:
+        etat.messages, etat.reprise, etat.conversation_id = [], "", ""
+    etat.documentation = _documentation_de(dossier)
 
 
 def _preparer(profil: config.Profil, mettre_a_jour: bool = False):
@@ -78,32 +126,44 @@ def _afficher_fichiers(fichiers: list, cle: str) -> None:
             st.code(str(chemin), language=None)
 
 
-async def _repondre(profil, prets, logs, question, sur_texte, sur_outil):
+async def _interroger(profil, prets, logs, question, sur_texte, sur_outil, dossier=None, precedents=None):
+    """Pose la question en reprenant le fil de l'agent ; si ce fil n'est plus disponible (conversation reprise
+    sur un autre compte ou un autre poste), repart avec le récapitulatif des échanges précédents."""
     etat = st.session_state
-    session = Session(profil, prets, logs, config.reglages(), getpass.getuser(), reprise=etat.reprise,
-                      ticket=etat.ticket)
-    await session.ouvrir()
-    try:
-        return await session.demander(question, sur_texte, sur_outil)
-    finally:
-        await session.fermer()
+    precedents = etat.messages if precedents is None else precedents
+
+    async def une_fois(reprise: str, texte: str):
+        session = Session(profil, prets, logs, config.reglages(), getpass.getuser(), reprise=reprise,
+                          ticket=etat.ticket, dossier_documentation=dossier)
+        await session.ouvrir()
+        try:
+            return await session.demander(texte, sur_texte, sur_outil)
+        finally:
+            await session.fermer()
+
+    if etat.reprise:
+        try:
+            bilan = await une_fois(etat.reprise, question)
+            if not (bilan.erreur and bilan.tours == 0):
+                return bilan
+        except Exception:  # fil introuvable : repli sur le récapitulatif
+            pass
+    return await une_fois("", historique.recapitulatif(precedents, question) if precedents else question)
+
+
+async def _repondre(profil, prets, logs, question, sur_texte, sur_outil):
+    """Question de la conversation : une documentation ouverte (produite ou rechargée) peut être poursuivie."""
+    doc = st.session_state.documentation
+    return await _interroger(profil, prets, logs, question, sur_texte, sur_outil,
+                             dossier=Path(doc["dossier"]) if doc else None,
+                             precedents=st.session_state.messages[:-1])
 
 
 # ---------------------------------------------------------------------------
 # Documentation pour le consultant fonctionnel
 # ---------------------------------------------------------------------------
 
-async def _documenter(profil, prets, logs, dossier, question, sur_texte, sur_outil, reprise):
-    session = Session(profil, prets, logs, config.reglages(), getpass.getuser(), reprise=reprise,
-                      ticket=st.session_state.ticket, dossier_documentation=dossier)
-    await session.ouvrir()
-    try:
-        return await session.demander(question, sur_texte, sur_outil)
-    finally:
-        await session.fermer()
-
-
-def _generer_documentation(profil, sujet: str, captures, avec_video: bool) -> None:
+def _generer_documentation(profil, sujet: str, captures, avec_video: bool, poursuivre: bool = False) -> None:
     etat = st.session_state
     try:
         prets, logs = _preparer(profil)
@@ -111,9 +171,13 @@ def _generer_documentation(profil, sujet: str, captures, avec_video: bool) -> No
         st.error(str(e))
         return
     racines = [chemin for _, chemin in prets] + logs
-    titre = f"{etat.ticket['cle']} — {etat.ticket['titre']}" if etat.ticket else sujet
-    dossier = documentation.nouveau_dossier(etat.ticket["cle"] if etat.ticket else sujet)
-    (dossier / "sujet.txt").write_text(titre, encoding="utf-8")
+    if poursuivre:  # documentation ouverte : même dossier, même sujet, versions précédentes gardées
+        dossier = Path(etat.documentation["dossier"])
+        titre = documentation.sujet(dossier)
+    else:
+        titre = f"{etat.ticket['cle']} — {etat.ticket['titre']}" if etat.ticket else sujet
+        dossier = documentation.nouveau_dossier(etat.ticket["cle"] if etat.ticket else sujet)
+        (dossier / "sujet.txt").write_text(titre, encoding="utf-8")
     try:
         for fichier in captures or []:
             documentation.ajouter_capture(dossier, fichier.name, fichier.getvalue())
@@ -128,10 +192,9 @@ def _generer_documentation(profil, sujet: str, captures, avec_video: bool) -> No
         etapes.append(resumer(nom_outil, entree, racines))
         statut.write(etapes[-1])
 
-    question = documentation.question(sujet, etat.ticket)
+    question = documentation.question_suite(sujet) if poursuivre else documentation.question(sujet, etat.ticket)
     try:  # reprend la conversation en cours si elle existe : l'enquête déjà faite sert de point de départ
-        bilan = asyncio.run(_documenter(profil, prets, logs, dossier, question, lambda _: None, sur_outil,
-                                                  etat.reprise))
+        bilan = asyncio.run(_interroger(profil, prets, logs, question, lambda _: None, sur_outil, dossier=dossier))
     except Exception as e:
         statut.update(label="Échec", state="error")
         st.error(f"L'agent n'a pas pu rédiger la documentation : {e}")
@@ -143,8 +206,16 @@ def _generer_documentation(profil, sujet: str, captures, avec_video: bool) -> No
         return
 
     cout = f"{bilan.cout_usd:.2f} $" if bilan.cout_usd is not None else "coût inconnu"
+    # la demande et la réponse rejoignent la conversation, pour pouvoir la poursuivre ou la reprendre plus tard
+    etat.reprise = bilan.session_id or etat.reprise
+    etat.messages += [{"role": "user", "texte": (f"Poursuivre la documentation : {sujet}" if poursuivre else
+                                                 f"Documentation : {titre}" + (f" ({sujet})" if sujet and etat.ticket
+                                                                               else ""))},
+                      {"role": "assistant", "texte": bilan.reponse or "_Documentation enregistrée._", "etapes": etapes,
+                       "bilan": cout, "documentation": True}]
     if _mettre_en_forme(dossier, titre, avec_video, statut):
         statut.update(label=f"Documentation prête ({len(etapes)} étape(s), {cout})", state="complete", expanded=False)
+    _sauvegarder()
 
 
 def _mettre_en_forme(dossier, titre: str, avec_video: bool, statut) -> bool:
@@ -158,7 +229,8 @@ def _mettre_en_forme(dossier, titre: str, avec_video: bool, statut) -> bool:
         st.error(str(e))
         return False
     st.session_state.documentation = {"dossier": str(dossier), "sujet": titre,
-                                      "fichiers": {k: str(v) for k, v in fichiers.items() if v and k != "voix"},
+                                      "fichiers": {k: str(v) for k, v in fichiers.items()
+                                                   if v and k not in ("voix", "langue")},
                                       "voix": fichiers.get("voix", "")}
     return True
 
@@ -169,12 +241,13 @@ def _afficher_documentation() -> None:
     fichiers = {k: Path(v) for k, v in doc["fichiers"].items() if Path(v).exists()}
     st.markdown(f"**{doc['sujet']}**")
     if fichiers.get("video"):
-        st.video(str(fichiers["video"]), subtitles={"Français": str(fichiers["sous_titres"])}
+        st.video(str(fichiers["video"]), subtitles={"Sous-titres": str(fichiers["sous_titres"])}
                  if fichiers.get("sous_titres") else None)
-        if not doc.get("voix"):
+        if doc.get("voix") == "":
             st.caption("Aucune voix de la langue du document sur ce poste : la narration est en sous-titres.")
-    with st.expander("Document écrit"):
-        st.markdown(fichiers["markdown"].read_text(encoding="utf-8"))
+    if fichiers.get("markdown"):
+        with st.expander("Document écrit"):
+            st.markdown(fichiers["markdown"].read_text(encoding="utf-8"))
     st.caption("À relire avant envoi. Pour corriger : modifie document.json dans "
                f"{doc['dossier']}, puis « Refaire à partir de document.json ».")
 
@@ -190,7 +263,7 @@ def _afficher_documentation() -> None:
         with st.spinner("Mise en forme…"):
             try:
                 rendu = documentation.produire(Path(doc["dossier"]), doc["sujet"], journal=lambda _: None)
-                doc["fichiers"] = {k: str(v) for k, v in rendu.items() if v and k != "voix"}
+                doc["fichiers"] = {k: str(v) for k, v in rendu.items() if v and k not in ("voix", "langue")}
                 st.rerun()
             except (documentation.DocumentationErreur, video.VideoErreur) as e:
                 st.error(str(e))
@@ -208,6 +281,22 @@ def _afficher_documentation() -> None:
                 st.error(str(e))
 
 
+def _choisir_documentation() -> None:
+    """Rouvre une documentation déjà produite (tous projets confondus), pour la relire ou la poursuivre."""
+    etat = st.session_state
+    precedentes = [d for d in documentation.lister()
+                   if not etat.documentation or d["dossier"] != etat.documentation["dossier"]]
+    if not precedentes:
+        return
+    c1, c2 = st.columns([4, 1], vertical_alignment="bottom")
+    choix = c1.selectbox("Rouvrir une documentation", precedentes, index=None, placeholder="Documentations précédentes",
+                         format_func=lambda d: f"{d['sujet']} — {historique.libelle_date(d['date'])}"
+                                               + ("" if d["video"] else " (sans vidéo)"))
+    if c2.button("Ouvrir", width="stretch", disabled=choix is None, key="ouvrir-documentation"):
+        ouvrir_documentation(choix["dossier"])
+        st.rerun()
+
+
 def _bloc_documentation(profil) -> None:
     etat = st.session_state
     with st.expander("Documentation pour le consultant fonctionnel", icon=":material/movie:",
@@ -215,14 +304,23 @@ def _bloc_documentation(profil) -> None:
         if etat.documentation:
             _afficher_documentation()
             st.divider()
+        _choisir_documentation()
         st.caption("L'agent enquête comme pour une question (en repartant de la conversation en cours), puis rédige "
                    "un document et une vidéo commentée : besoin, écrans, règles de gestion, paramétrage, cas de test. "
                    "Tu peux aussi le demander directement dans la conversation (« fais-moi une vidéo de cette "
                    "tâche »). Si l'application du projet est renseignée dans la configuration, l'agent y prend "
                    "lui-même les captures d'écran ; ce formulaire sert à joindre les tiennes.")
         with st.form("formulaire-documentation", border=False):
-            sujet = st.text_input("Fonctionnalité à documenter", value="" if etat.ticket else "",
-                                  placeholder=(f"La tâche {etat.ticket['cle']} (ou précise un angle)" if etat.ticket
+            poursuivre = False
+            if etat.documentation:
+                choix_suite = f"Poursuivre « {etat.documentation['sujet']} »"
+                poursuivre = st.radio("Documentation", [choix_suite, "Nouvelle documentation"], horizontal=True,
+                                      label_visibility="collapsed") == choix_suite
+            sujet = st.text_input("Fonctionnalité à documenter, ou ce qu'il faut changer si tu poursuis",
+                                  value="",
+                                  placeholder=("ex. ajoute un cas de test sur la purge, fais-la en anglais…"
+                                               if etat.documentation else
+                                               f"La tâche {etat.ticket['cle']} (ou précise un angle)" if etat.ticket
                                                else "ex. La libération manuelle des vagues"))
             captures = st.file_uploader("Captures d'écran (facultatif)", type=["png", "jpg", "jpeg", "webp"],
                                         accept_multiple_files=True,
@@ -231,12 +329,35 @@ def _bloc_documentation(profil) -> None:
             avec_video = st.checkbox("Produire la vidéo", value=True)
             lancer = st.form_submit_button("Générer la documentation", type="primary")
         if lancer:
-            if not etat.ticket and not sujet.strip():
+            if not poursuivre and not etat.ticket and not sujet.strip():
                 st.error("Charge une tâche Jira ou indique la fonctionnalité à documenter.")
             else:
-                _generer_documentation(profil, sujet.strip(), captures, avec_video)
+                _generer_documentation(profil, sujet.strip(), captures, avec_video, poursuivre)
                 if etat.documentation:
                     st.rerun()
+
+
+def _historique(profil: str) -> None:
+    """Conversations précédentes du projet, à reprendre là où elles s'étaient arrêtées."""
+    etat = st.session_state
+    conversations = [c for c in historique.lister(profil) if c["id"] != etat.conversation_id]
+    if not conversations:
+        return
+    choix = st.selectbox("Reprendre une conversation", conversations, index=None, placeholder="Conversations précédentes",
+                         format_func=lambda c: f"{historique.libelle_date(c['maj_le'])} · {c['titre']}"
+                                               + (" 🎬" if c["documentation"] else ""))
+    c1, c2 = st.columns(2)
+    if c1.button("Reprendre", width="stretch", disabled=choix is None, type="primary"):
+        try:
+            reprendre_conversation(choix["id"])
+        except config.ConfigError as e:
+            st.error(str(e))
+        else:
+            st.rerun()
+    if c2.button("Supprimer", width="stretch", disabled=choix is None,
+                 help="Retire cette conversation de l'historique (la documentation produite est gardée)."):
+        historique.supprimer(profil, choix["id"])
+        st.rerun()
 
 
 def _barre_laterale(page_configuration) -> config.Profil | None:
@@ -288,7 +409,8 @@ def _barre_laterale(page_configuration) -> config.Profil | None:
 
         st.divider()
         st.button("Nouvelle conversation", on_click=nouvelle_conversation, width="stretch",
-                  disabled=not etat.messages)
+                  disabled=not etat.messages and not etat.documentation)
+        _historique(nom)
         if etat.messages:
             st.download_button("Télécharger la conversation", _en_markdown(nom), width="stretch",
                                file_name=f"odatio-{nom}-{datetime.now():%Y%m%d-%H%M}.md", mime="text/markdown")
@@ -400,5 +522,6 @@ def page(page_configuration) -> None:
     etat.messages.append({"role": "assistant", "texte": reponse, "etapes": etapes, "bilan": resume_bilan,
                           "fichiers": bilan.fichiers, "video": video_message,
                           "documentation": bool(bilan.documentation)})
+    _sauvegarder()
     if bilan.documentation:
         st.rerun()  # réaffiche la page : vidéo sous la réponse, téléchargements dans le bloc de documentation
