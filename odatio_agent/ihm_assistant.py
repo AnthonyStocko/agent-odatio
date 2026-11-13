@@ -9,6 +9,8 @@ interaction).
 Chaque conversation est enregistrée après chaque réponse (historique.py) : la barre latérale permet d'en
 reprendre une ancienne, et le bloc de documentation de rouvrir une documentation déjà produite pour la
 poursuivre (ajouter un cas de test, des captures, corriger, traduire) avec la conversation qui l'a produite.
+Charger une tâche Jira reprend la dernière conversation du projet sur cette tâche (charger_tache), là où elle
+s'était arrêtée ; « Nouvelle conversation » repart de zéro en gardant la tâche.
 """
 import asyncio
 import getpass
@@ -36,6 +38,7 @@ def _etat():
     etat.setdefault("preparation", {})    # profil -> (sources prêtes, dossiers de logs)
     etat.setdefault("ticket", None)       # {"cle", "titre", "texte"} de la tâche à tester
     etat.setdefault("documentation", None)  # {"dossier", "sujet", "fichiers"} de la dernière documentation produite
+    etat.setdefault("avis", "")           # message à afficher une fois (conversation d'une tâche reprise)
     return etat
 
 
@@ -73,6 +76,20 @@ def reprendre_conversation(identifiant: str) -> None:
     etat.ticket = conversation.get("ticket")
     doc = conversation.get("documentation") or {}
     etat.documentation = _documentation_de(doc["dossier"]) if doc.get("dossier") else None
+
+
+def charger_tache(ticket: dict) -> dict | None:
+    """Pose la tâche Jira et reprend la conversation la plus récente du projet sur cette tâche, là où elle s'était
+    arrêtée ; sans conversation, repart d'une conversation vide. Le ticket qui vient d'être lu remplace celui
+    enregistré, pour que l'agent travaille sur sa description à jour. Renvoie la conversation reprise."""
+    etat = st.session_state
+    conversation = historique.du_ticket(etat.profil_actif, ticket["cle"])
+    if conversation:
+        reprendre_conversation(conversation["id"])
+    else:
+        nouvelle_conversation()
+    etat.ticket = ticket
+    return conversation
 
 
 def ouvrir_documentation(dossier: str) -> None:
@@ -401,15 +418,22 @@ def _barre_laterale(page_configuration) -> config.Profil | None:
                 if st.form_submit_button("Charger la tâche", width="stretch") and cle:
                     try:
                         with st.spinner("Lecture du ticket…"):
-                            etat.ticket = outils.jira_ticket(cle, profil)
-                        nouvelle_conversation()
-                        st.rerun()
-                    except outils.OutilErreur as e:
+                            reprise = charger_tache(outils.jira_ticket(cle, profil))
+                    except (outils.OutilErreur, config.ConfigError) as e:
                         st.error(str(e))
+                    else:
+                        if reprise:  # affiché après le rechargement de la page
+                            questions = sum(1 for m in reprise.get("messages") or [] if m.get("role") == "user")
+                            etat.avis = (f"Conversation sur {etat.ticket['cle']} reprise ({questions} question(s), "
+                                         f"dernière le {historique.libelle_date(reprise.get('maj_le', ''))}). "
+                                         f"« Nouvelle conversation » pour repartir de zéro.")
+                        st.rerun()
 
         st.divider()
         st.button("Nouvelle conversation", on_click=nouvelle_conversation, width="stretch",
-                  disabled=not etat.messages and not etat.documentation)
+                  disabled=not etat.messages and not etat.documentation,
+                  help="Repart d'une conversation vide (la tâche chargée est gardée) ; la conversation en cours "
+                       "reste dans l'historique.")
         _historique(nom)
         if etat.messages:
             st.download_button("Télécharger la conversation", _en_markdown(nom), width="stretch",
@@ -425,6 +449,9 @@ def _barre_laterale(page_configuration) -> config.Profil | None:
 
 def page(page_configuration) -> None:
     etat = _etat()
+    if etat.avis:
+        st.toast(etat.avis, icon=":material/history:")
+        etat.avis = ""
     profil = _barre_laterale(page_configuration)
 
     st.title("Agent Odatio")

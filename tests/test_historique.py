@@ -53,6 +53,38 @@ class TestHistorique(AvecDossierTemporaire):
         self.assertEqual(historique.de_la_documentation("local", str(dossier))["id"], ident)
         self.assertIsNone(historique.de_la_documentation("local", str(dossier.parent / "autre")))
 
+    def _dater(self, profil: str, ident: str, maj_le: str) -> None:
+        """Fixe la date de mise à jour d'une conversation (plusieurs enregistrements tombent dans la même seconde)."""
+        chemin = historique._dossier(profil) / f"{ident}.json"
+        donnees = json.loads(chemin.read_text(encoding="utf-8"))
+        donnees["maj_le"] = maj_le
+        chemin.write_text(json.dumps(donnees, ensure_ascii=False), encoding="utf-8")
+
+    def test_lister_expose_la_cle_du_ticket(self):
+        avec = historique.enregistrer("local", {"messages": MESSAGES,
+                                                "ticket": {"cle": "ODA-1", "titre": "Tâche fictive", "texte": ""}})
+        sans = historique.enregistrer("local", {"messages": MESSAGES})
+        ancien = historique._dossier("local") / "20250101-080000-000000.json"   # format sans clé « ticket »
+        ancien.write_text(json.dumps({"id": "20250101-080000-000000", "titre": "Ancienne", "maj_le": "2025-01-01T08:00:00",
+                                      "messages": MESSAGES}), encoding="utf-8")
+        tickets = {c["id"]: c["ticket"] for c in historique.lister("local")}
+        self.assertEqual(tickets, {avec: "ODA-1", sans: "", "20250101-080000-000000": ""})
+
+    def test_conversation_d_un_ticket(self):
+        tache = {"cle": "ODA-1", "titre": "Tâche fictive", "texte": "Description fictive"}
+        ancienne = historique.enregistrer("local", {"messages": MESSAGES[:1], "ticket": tache})
+        recente = historique.enregistrer("local", {"messages": MESSAGES, "ticket": tache})
+        autre = historique.enregistrer("local", {"messages": MESSAGES, "ticket": dict(tache, cle="ODA-2")})
+        historique.enregistrer("local", {"messages": MESSAGES})
+        self._dater("local", ancienne, "2026-01-01T10:00:00")
+        self._dater("local", recente, "2026-01-02T10:00:00")
+        self._dater("local", autre, "2026-01-03T10:00:00")
+        self.assertEqual(historique.du_ticket("local", "oda-1 ")["id"], recente)
+        self.assertEqual(historique.du_ticket("local", "ODA-2")["id"], autre)
+        self.assertIsNone(historique.du_ticket("local", "ODA-3"))
+        self.assertIsNone(historique.du_ticket("local", ""))
+        self.assertIsNone(historique.du_ticket("autre", "ODA-1"))   # cloisonné par projet
+
     def test_recapitulatif(self):
         texte = historique.recapitulatif(MESSAGES, "Et pour un samedi ?")
         self.assertIn("délai du transporteur", texte)
