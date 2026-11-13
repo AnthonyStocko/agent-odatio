@@ -67,7 +67,8 @@ def enregistrer(profil: str, conversation: dict) -> str:
 
 
 def lister(profil: str, limite: int = 50) -> list:
-    """[{id, titre, maj_le, questions, documentation}] du plus récent au plus ancien."""
+    """[{id, titre, maj_le, questions, documentation, ticket}] du plus récent au plus ancien ; ticket : clé de la
+    tâche Jira, ou "" si la conversation n'en a pas."""
     dossier = _dossier(profil)
     resultats = []
     for chemin in dossier.glob("*.json") if dossier.is_dir() else []:
@@ -78,7 +79,8 @@ def lister(profil: str, limite: int = 50) -> list:
         resultats.append({"id": d.get("id", chemin.stem), "titre": d.get("titre", chemin.stem),
                           "maj_le": d.get("maj_le", ""),
                           "questions": sum(1 for m in d.get("messages") or [] if m.get("role") == "user"),
-                          "documentation": (d.get("documentation") or {}).get("dossier", "")})
+                          "documentation": (d.get("documentation") or {}).get("dossier", ""),
+                          "ticket": (d.get("ticket") or {}).get("cle", "") or ""})
     return sorted(resultats, key=lambda r: r["maj_le"], reverse=True)[:limite]
 
 
@@ -104,6 +106,17 @@ def de_la_documentation(profil: str, dossier_documentation: str) -> dict | None:
     cible = str(Path(dossier_documentation).resolve())
     for r in lister(profil, limite=500):
         if r["documentation"] and str(Path(r["documentation"]).resolve()) == cible:
+            return charger(profil, r["id"])
+    return None
+
+
+def du_ticket(profil: str, cle: str) -> dict | None:
+    """La conversation la plus récente du projet sur cette tâche Jira, s'il y en a une."""
+    cible = str(cle or "").strip().upper()
+    if not cible:
+        return None
+    for r in lister(profil, limite=500):
+        if str(r["ticket"]).strip().upper() == cible:
             return charger(profil, r["id"])
     return None
 
