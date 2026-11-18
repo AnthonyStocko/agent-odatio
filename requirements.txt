@@ -4,6 +4,7 @@ requests>=2.31
 sqlalchemy>=2.0
 streamlit>=1.50
 tomli-w>=1.0
+paramiko>=3.4           # logs d'un serveur par SSH avec utilisateur et mot de passe
 
 # Documentation pour le consultant : diapositives, vidéo (ffmpeg fourni), document Word
 pillow>=10.1

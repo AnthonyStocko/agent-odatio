@@ -1,8 +1,7 @@
 """
 Logs lus sur un serveur par SSH (ex. la production), en LECTURE SEULE.
 
-Le client OpenSSH du poste (``ssh``, fourni avec Windows 10 et 11) exécute sur le serveur des commandes FIXES,
-construites ici : ``find`` pour lister les fichiers de logs, ``zgrep`` pour chercher, ``zcat``, ``tail``,
+Le serveur exécute des commandes FIXES, construites ici : ``find`` pour lister les fichiers de logs, ``zgrep`` pour chercher, ``zcat``, ``tail``,
 ``head`` et ``cut`` pour lire. L'agent ne fournit que des paramètres (heures, texte cherché, fichier), contrôlés
 puis passés entre guillemets (``shlex.quote``) : il n'a jamais de shell et ne peut lancer aucune autre commande.
 Aucune de ces commandes n'écrit sur le serveur.
@@ -10,21 +9,28 @@ Aucune de ces commandes n'écrit sur le serveur.
 Côté serveur, la lecture seule doit aussi être garantie par le compte utilisé : un compte dédié qui ne peut que
 lire les dossiers de logs (voir le README).
 
-Connexion : ``BatchMode`` (jamais de mot de passe demandé : clé ou agent SSH), ``StrictHostKeyChecking=yes``
-(serveur inconnu refusé : se connecter une fois à la main pour enregistrer sa clé), aucune redirection.
+Connexion, deux façons :
+- **mot de passe** (le plus simple) : la bibliothèque ``paramiko``, avec l'utilisateur et le mot de passe du
+  projet (le mot de passe reste dans le .env). Un mot de passe refusé n'est jamais réessayé avec la même valeur,
+  pour ne pas verrouiller le compte ;
+- **clé** : le client OpenSSH du poste (``ssh``, fourni avec Windows), en ``BatchMode`` (clé ou agent SSH).
+Dans les deux cas, la clé du serveur est vérifiée (``~/.ssh/known_hosts`` : serveur inconnu refusé, se connecter
+une fois à la main pour l'enregistrer) et rien n'est redirigé.
 
 Heures : celles des logs, c'est-à-dire l'heure locale du serveur, supposée être celle du poste. Une heure avec
 fuseau (``Z``, ``+01:00``) est convertie dans l'heure du poste.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import posixpath
 import re
 import shlex
 import shutil
+import socket
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from fnmatch import fnmatch
 
@@ -44,6 +50,7 @@ PROGRAMMES = ("find", "zgrep", "zcat", "tail", "head", "cut", "test")
 _CHEMIN = re.compile(r"^/[A-Za-z0-9._/+-]*$")
 _MOTIF = re.compile(r"^[A-Za-z0-9._*?+-]+$")
 _HOTE = re.compile(r"^[A-Za-z0-9._-]+$")
+_UTILISATEUR = re.compile(r"^[A-Za-z0-9._@\\-]+$")    # accepte DOMAINE\\utilisateur
 _REBOND = re.compile(r"^[A-Za-z0-9._@:,-]+$")
 _SPECIAUX_ERE = set(".[]()*+?^$|{}\\")
 
@@ -63,6 +70,8 @@ class LogsSsh:
     rebond: str = ""                 # serveur de rebond (ProxyJump), facultatif
     motif: str = "*.log*"            # fichiers retenus dans les dossiers (inclut les .log.gz de la rotation)
     horodatage: str = "%Y-%m-%d %H:%M:%S"   # format de l'heure en début de ligne (après un « [ » éventuel)
+    mot_de_passe_env: str = ""       # variable du .env qui porte le mot de passe (vide : connexion par clé)
+    mot_de_passe: str = field(default="", repr=False, compare=False)   # rempli à l'usage, jamais enregistré
 
 
 @dataclass
@@ -81,7 +90,7 @@ def erreurs(c: LogsSsh) -> list:
     problemes = []
     if not _HOTE.match(c.hote or ""):
         problemes.append("hôte manquant ou invalide (lettres, chiffres, point, tiret)")
-    if c.utilisateur and not _HOTE.match(c.utilisateur):
+    if c.utilisateur and not _UTILISATEUR.match(c.utilisateur):
         problemes.append(f"utilisateur invalide : « {c.utilisateur} »")
     if c.port and not (str(c.port).isdigit() and 0 < int(c.port) < 65536):
         problemes.append(f"port invalide : « {c.port} »")
@@ -195,8 +204,78 @@ def commande_lire(fichier: str, motif_ere: str, lignes: int) -> str:
             f"| cut -c 1-{LONGUEUR_LIGNE_MAX}")
 
 
+KNOWN_HOSTS = os.path.join("~", ".ssh", "known_hosts")
+_REFUSES: set = set()        # (hôte, port, utilisateur, empreinte du mot de passe) refusés : jamais réessayés
+
+
+def _empreinte(c: LogsSsh) -> tuple:
+    return (c.hote, str(c.port or 22), c.utilisateur, hashlib.sha256(c.mot_de_passe.encode("utf-8")).hexdigest())
+
+
+def _paramiko():
+    try:
+        import paramiko
+    except ImportError:
+        raise LogsSshErreur("Connexion par mot de passe : installe la bibliothèque paramiko "
+                            "(venv\\Scripts\\python.exe -m pip install -r requirements.txt).")
+    return paramiko
+
+
+def _executer_mot_de_passe(c: LogsSsh, distante: str) -> str:
+    """Connexion par utilisateur et mot de passe (paramiko), une commande, puis fermeture."""
+    if c.rebond:
+        raise LogsSshErreur("Le serveur de rebond n'est pas pris en charge avec un mot de passe : utilise une clé.")
+    if not c.utilisateur:
+        raise LogsSshErreur("Connexion par mot de passe : l'utilisateur SSH est obligatoire.")
+    if _empreinte(c) in _REFUSES:
+        raise LogsSshErreur(f"Utilisateur ou mot de passe refusé par {c.hote} lors d'un essai précédent : corrige-le "
+                            f"dans Configuration > Projets (aucun nouvel essai, pour ne pas verrouiller le compte).")
+    paramiko = _paramiko()
+    client = paramiko.SSHClient()
+    connus = os.path.expanduser(KNOWN_HOSTS)
+    if os.path.exists(connus):
+        client.load_host_keys(connus)
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    try:
+        client.connect(c.hote, port=int(c.port or 22), username=c.utilisateur, password=c.mot_de_passe,
+                       key_filename=os.path.expanduser(c.cle) if c.cle else None, look_for_keys=False,
+                       allow_agent=False, timeout=15, banner_timeout=15, auth_timeout=15)
+        _, stdout, stderr = client.exec_command(distante, timeout=DELAI_SECONDES)
+        sortie = stdout.read()
+        erreur = stderr.read()
+        code = stdout.channel.recv_exit_status()
+    except paramiko.AuthenticationException:
+        _REFUSES.add(_empreinte(c))
+        raise LogsSshErreur(f"Utilisateur ou mot de passe refusé par {c.hote} : vérifie-les dans Configuration > "
+                            f"Projets (aucun nouvel essai avec ce mot de passe, pour ne pas verrouiller le compte).")
+    except paramiko.BadHostKeyException:
+        raise LogsSshErreur(f"La clé du serveur {c.hote} a changé depuis son enregistrement : vérifie-la avec "
+                            f"l'équipe du serveur avant de corriger {connus}.")
+    except (socket.timeout, TimeoutError):
+        raise LogsSshErreur(f"Le serveur n'a pas répondu en {DELAI_SECONDES} s : resserre la recherche.")
+    except paramiko.SSHException as e:
+        if "known_hosts" in str(e) or "not found" in str(e):
+            raise LogsSshErreur(f"Clé du serveur inconnue : connecte-toi une fois à la main (ssh {c.utilisateur}@"
+                                f"{c.hote}) pour la vérifier et l'enregistrer.")
+        raise LogsSshErreur(f"Connexion SSH impossible : {str(e)[:300]}")
+    except OSError as e:
+        raise LogsSshErreur(f"Connexion SSH impossible : {str(e)[:300]}")
+    finally:
+        client.close()
+    texte, message = sortie.decode("utf-8", errors="replace"), erreur.decode("utf-8", errors="replace").strip()
+    if code not in (0, 1) and not texte.strip():
+        raise LogsSshErreur(f"Erreur sur le serveur (code {code}) : {message[:300]}")
+    return texte
+
+
+def avec_mot_de_passe(c: LogsSsh, mot_de_passe: str) -> LogsSsh:
+    return replace(c, mot_de_passe=mot_de_passe or "")
+
+
 def _executer(c: LogsSsh, distante: str, executer=None) -> str:
     """Lance la commande distante ; renvoie sa sortie. ``executer`` remplace subprocess.run dans les tests."""
+    if c.mot_de_passe and executer is None:
+        return _executer_mot_de_passe(c, distante)
     arguments = commande_ssh(c, distante)
     try:
         r = (executer or subprocess.run)(arguments, capture_output=True, stdin=subprocess.DEVNULL,

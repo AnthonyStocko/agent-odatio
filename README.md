@@ -170,16 +170,19 @@ Une documentation prend plus d'étapes qu'une question, surtout avec des capture
 ## Logs d'un serveur par SSH (ex. la production)
 
 Pour un environnement dont les logs ne sont ni sur le poste, ni dans groundcover, l'agent peut les lire sur le
-serveur par SSH, **en lecture seule**. Configuration : onglet Configuration, Projets, « Logs d'un serveur par SSH »,
-ou dans `profils.toml` :
+serveur par SSH, **en lecture seule**. Configuration : onglet Configuration, Projets, « Logs d'un serveur par SSH » :
+le serveur, l'utilisateur, le mot de passe et les dossiers de logs suffisent. Le mot de passe est enregistré dans le
+`.env` (`SSH_PASSWORD_<PROJET>`), jamais dans `profils.toml`. À la place du mot de passe, une clé privée peut être
+indiquée. Dans `profils.toml` :
 
 ```toml
 [profils.production.logs.ssh]
 hote = "serveur-logs"              # nom d'hôte, ou alias de ~/.ssh/config
-utilisateur = "lecture-logs"       # facultatif
+utilisateur = "lecture-logs"
+mot_de_passe_env = "SSH_PASSWORD_PRODUCTION"   # mot de passe dans le .env (vide : connexion par clé)
 port = "22"                        # facultatif
-cle = "~/.ssh/id_ed25519_logs"     # facultatif : sinon agent SSH ou ~/.ssh/config
-rebond = ""                        # facultatif : serveur de rebond (ProxyJump), ex. "moi@bastion"
+cle = "~/.ssh/id_ed25519_logs"     # facultatif, à la place du mot de passe : sinon agent SSH ou ~/.ssh/config
+rebond = ""                        # facultatif, avec une clé seulement : serveur de rebond, ex. "moi@bastion"
 dossiers = ["/var/log/odatio"]     # chemins absolus sur le serveur
 motif = "*.log*"                   # fichiers retenus (y compris les .log.gz de la rotation)
 horodatage = "%Y-%m-%d %H:%M:%S"   # format de l'heure en début de ligne (après un « [ » éventuel)
@@ -196,17 +199,18 @@ au plus par appel, lignes coupées à 2 000 caractères.
 
 **Lecture seule, à deux niveaux.**
 
-- **Côté agent** : il n'a aucun shell. Le client `ssh` du poste (fourni avec Windows) ne lance sur le serveur que
-  des commandes fixes, écrites dans `odatio_agent/logs_ssh.py` : `find` (lister), `zgrep` (chercher), `zcat`,
+- **Côté agent** : il n'a aucun shell. Il ne lance sur le serveur que des commandes fixes, écrites dans
+  `odatio_agent/logs_ssh.py` : `find` (lister), `zgrep` (chercher), `zcat`,
   `tail`, `head` et `cut` (lire). L'agent ne choisit que des paramètres (heures, texte, fichier) : le fichier doit
   être dans un dossier configuré et correspondre au motif, le texte est cherché tel quel (`grep -F`), et tout est
-  passé entre guillemets. Connexion sans mot de passe (`BatchMode`), clé du serveur vérifiée
-  (`StrictHostKeyChecking=yes`), aucune redirection de port, d'agent ou d'affichage.
+  passé entre guillemets. Connexion par mot de passe (bibliothèque `paramiko`) ou par clé (client `ssh` du poste,
+  `BatchMode`) ; dans les deux cas, clé du serveur vérifiée dans `~/.ssh/known_hosts` et aucune redirection. Un
+  mot de passe refusé n'est jamais réessayé avec la même valeur, pour ne pas verrouiller le compte.
 - **Côté serveur** : **utilise un compte dédié qui ne peut que lire les dossiers de logs** (pas de sudo, pas
   d'écriture). C'est la seule garantie absolue, comme le compte base en lecture seule.
 
-Avant la première utilisation, connecte-toi une fois à la main (`ssh serveur-logs`) pour vérifier et enregistrer la
-clé du serveur : un serveur inconnu est refusé. « Enregistrer et tester » vérifie ensuite la connexion et les
+Avant la première utilisation, connecte-toi une fois à la main (`ssh utilisateur@serveur`) pour vérifier et
+enregistrer la clé du serveur : un serveur inconnu est refusé. « Enregistrer et tester » vérifie ensuite la connexion et les
 dossiers.
 
 **Données personnelles.** Les lignes lues sont envoyées à Claude : vérifie que c'est autorisé pour cet

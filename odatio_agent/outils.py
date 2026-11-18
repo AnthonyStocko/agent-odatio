@@ -141,14 +141,19 @@ def logs_rechercher(profil: config.Profil, debut: str, fin: str, recherche: str 
 def _ssh(profil: config.Profil, outil: str, details: dict, appel) -> str:
     if not profil.logs_ssh:
         raise OutilErreur("Aucun accès SSH aux logs n'est configuré pour ce profil.")
+    mot_de_passe = config.secret(profil.logs_ssh.mot_de_passe_env)
     try:
-        texte = appel(profil.logs_ssh)
+        texte = appel(logs_ssh.avec_mot_de_passe(profil.logs_ssh, mot_de_passe))
     except logs_ssh.LogsSshErreur as e:
-        message = mask_secrets(str(e))[0]
+        message = _sans(mask_secrets(str(e))[0], mot_de_passe)
         journal(profil, outil, details, message)
         raise OutilErreur(message)
     journal(profil, outil, details)
-    return mask_secrets(texte)[0]
+    return _sans(mask_secrets(texte)[0], mot_de_passe)
+
+
+def _sans(texte: str, mot_de_passe: str) -> str:
+    return texte.replace(mot_de_passe, "***") if mot_de_passe and len(mot_de_passe) >= 4 else texte
 
 
 def logs_ssh_fichiers(profil: config.Profil) -> str:
@@ -307,8 +312,9 @@ def tester(profil: config.Profil) -> list:
         except OutilErreur as e:
             resultats.append(("groundcover", False, str(e)))
     if profil.logs_ssh:
-        ok, message = logs_ssh.tester(profil.logs_ssh)
-        resultats.append(("Logs SSH", ok, mask_secrets(message)[0]))
+        mot_de_passe = config.secret(profil.logs_ssh.mot_de_passe_env)
+        ok, message = logs_ssh.tester(logs_ssh.avec_mot_de_passe(profil.logs_ssh, mot_de_passe))
+        resultats.append(("Logs SSH", ok, _sans(mask_secrets(message)[0], mot_de_passe)))
     if bitbucket.configure(profil):
         ok, message = bitbucket.tester(profil)
         resultats.append(("Bitbucket", ok, mask_secrets(message)[0]))
