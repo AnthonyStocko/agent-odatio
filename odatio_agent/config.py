@@ -18,6 +18,7 @@ import shutil
 import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from urllib.parse import parse_qs, unquote
 
 from dotenv import dotenv_values, set_key, unset_key
 
@@ -214,6 +215,31 @@ def tous_les_profils() -> list:
     return [_profil(nom, brut, False) for nom, brut in _lire_toml().get("profils", {}).items()]
 
 
+_PAGE_BITBUCKET = re.compile(r"^(https?://[^?#]+?)/projects/([^/?#]+)/repos/([^/?#]+)[^?#]*(?:\?([^#]*))?")
+
+
+def url_clone(depot: str) -> tuple:
+    """(adresse de clonage, branche) d'une adresse de dépôt.
+
+    Une adresse copiée depuis la page web d'un dépôt Bitbucket Server (…/projects/PROJ/repos/depot/browse…)
+    devient l'adresse de clonage …/scm/proj/depot.git ; la branche affichée (« ?at=refs/heads/dev ») est
+    rendue si elle figure dans l'adresse. Toute autre adresse est rendue telle quelle, sans branche."""
+    depot = (depot or "").strip()
+    m = _PAGE_BITBUCKET.match(depot)
+    if not m:
+        return depot, ""
+    at = parse_qs(m.group(4) or "").get("at", [""])[0]
+    branche = unquote(at[len("refs/heads/"):]) if at.startswith("refs/heads/") else ""
+    return f"{m.group(1)}/scm/{m.group(2).lower()}/{m.group(3)}.git", branche
+
+
+def source_depot(nom: str, depot: str, branche: str) -> Source:
+    """Source clonée depuis un dépôt Git, adresse normalisée (voir url_clone) ; la branche saisie l'emporte."""
+    depot, branche_url = url_clone(depot)
+    defaut = depot.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+    return Source(nom=nom or defaut, depot=depot, branche=branche or branche_url)
+
+
 def _profil(nom: str, brut: dict, interdits_par_defaut: bool) -> Profil:
 
     sources = []
@@ -221,9 +247,11 @@ def _profil(nom: str, brut: dict, interdits_par_defaut: bool) -> Profil:
         chemin, depot = str(s.get("chemin", "")).strip(), str(s.get("depot", "")).strip()
         if bool(chemin) == bool(depot):
             raise ConfigError(f"Profil « {nom} », source n° {i} : renseigne soit « chemin », soit « depot ».")
-        defaut = Path(chemin).name if chemin else depot.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
-        sources.append(Source(nom=str(s.get("nom", "")).strip() or defaut, chemin=chemin, depot=depot,
-                              branche=str(s.get("branche", "")).strip()))
+        nom_source, branche = str(s.get("nom", "")).strip(), str(s.get("branche", "")).strip()
+        if depot:
+            sources.append(source_depot(nom_source, depot, branche))
+        else:
+            sources.append(Source(nom=nom_source or Path(chemin).name, chemin=chemin, branche=branche))
     if not sources:
         raise ConfigError(f"Profil « {nom} » : au moins une source (chemin ou depot) est nécessaire.")
 
