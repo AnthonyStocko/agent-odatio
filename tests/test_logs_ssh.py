@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -266,3 +267,131 @@ class TestIntegration(AvecDossierTemporaire):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FauxParamiko:
+    """Module paramiko simulé : enregistre la connexion, renvoie une sortie ou lève l'erreur prévue."""
+
+    class AuthenticationException(Exception):
+        pass
+
+    class SSHException(Exception):
+        pass
+
+    class BadHostKeyException(SSHException):
+        pass
+
+    class RejectPolicy:
+        pass
+
+    def __init__(self, sortie=b"", erreur=None):
+        self.sortie, self.erreur, self.connexions, self.commandes = sortie, erreur, [], []
+        faux = self
+
+        class Canal:
+            def recv_exit_status(self):
+                return 0
+
+        class Flux:
+            def __init__(self, contenu):
+                self.contenu, self.channel = contenu, Canal()
+
+            def read(self):
+                return self.contenu
+
+        class SSHClient:
+            def load_host_keys(self, chemin):
+                faux.known_hosts = chemin
+
+            def set_missing_host_key_policy(self, politique):
+                faux.politique = politique
+
+            def connect(self, hote, **options):
+                faux.connexions.append((hote, options))
+                if faux.erreur:
+                    raise faux.erreur
+
+            def exec_command(self, commande, timeout=None):
+                faux.commandes.append(commande)
+                return None, Flux(faux.sortie), Flux(b"")
+
+            def close(self):
+                faux.fermee = True
+
+        self.SSHClient = SSHClient
+
+
+class TestMotDePasse(unittest.TestCase):
+    def setUp(self):
+        logs_ssh._REFUSES.clear()
+        self.c = logs_ssh.avec_mot_de_passe(
+            LogsSsh(hote="10.0.0.1", utilisateur="DOMAINE\\lecteur", dossiers=["/var/log/odatio"],
+                    mot_de_passe_env="SSH_PASSWORD_PROD"), "motdepasse-secret")
+
+    def test_connexion_par_mot_de_passe(self):
+        faux = FauxParamiko(sortie=b"1763456400.0 10 /var/log/odatio/a.log\n")
+        with mock.patch.object(logs_ssh, "_paramiko", return_value=faux):
+            fichiers = logs_ssh.lister(self.c)
+        self.assertEqual([f.chemin for f in fichiers], ["/var/log/odatio/a.log"])
+        hote, options = faux.connexions[0]
+        self.assertEqual((hote, options["port"], options["username"], options["password"]),
+                         ("10.0.0.1", 22, "DOMAINE\\lecteur", "motdepasse-secret"))
+        self.assertFalse(options["look_for_keys"] or options["allow_agent"])
+        self.assertIsInstance(faux.politique, FauxParamiko.RejectPolicy)      # serveur inconnu refusé
+        self.assertTrue(faux.fermee)
+        self.assertLessEqual(programmes(faux.commandes[0]), set(logs_ssh.PROGRAMMES))
+        self.assertNotIn("motdepasse", repr(self.c))
+
+    def test_mot_de_passe_refuse_jamais_reessaye(self):
+        faux = FauxParamiko(erreur=FauxParamiko.AuthenticationException("refus"))
+        with mock.patch.object(logs_ssh, "_paramiko", return_value=faux):
+            for _ in range(3):
+                with self.assertRaises(LogsSshErreur) as e:
+                    logs_ssh.lister(self.c)
+                self.assertIn("aucun nouvel essai", str(e.exception))
+            self.assertEqual(len(faux.connexions), 1)
+            faux.erreur = None
+            logs_ssh.lister(logs_ssh.avec_mot_de_passe(self.c, "nouveau-mot-de-passe"))   # corrigé : nouvel essai
+        self.assertEqual(len(faux.connexions), 2)
+
+    def test_erreurs_de_connexion(self):
+        cas = ((FauxParamiko.SSHException("Server '10.0.0.1' not found in known_hosts"), "connecte-toi une fois"),
+               (FauxParamiko.BadHostKeyException("changée"), "a changé"),
+               (OSError("No route to host"), "Connexion SSH impossible"))
+        for erreur, attendu in cas:
+            with self.subTest(attendu), mock.patch.object(logs_ssh, "_paramiko", return_value=FauxParamiko(erreur=erreur)):
+                with self.assertRaises(LogsSshErreur) as e:
+                    logs_ssh.lister(self.c)
+                self.assertIn(attendu, str(e.exception))
+
+    def test_rebond_et_utilisateur(self):
+        for c in (replace(self.c, rebond="moi@bastion"), replace(self.c, utilisateur="")):
+            with self.subTest(c.rebond or "sans utilisateur"), self.assertRaises(LogsSshErreur):
+                logs_ssh.lister(c)
+        self.assertIn("utilisateur invalide", logs_ssh.erreurs(replace(self.c, utilisateur="a;b"))[0])
+
+
+class TestMotDePasseIntegration(AvecDossierTemporaire):
+    def test_secret_du_env_transmis_et_masque(self):
+        profil = self.profil(logs_ssh=LogsSsh(hote="10.0.0.1", utilisateur="lecteur", dossiers=["/var/log/odatio"],
+                                              mot_de_passe_env="SSH_PASSWORD_PROD"))
+        vu = {}
+
+        def lister(c):
+            vu["mot_de_passe"] = c.mot_de_passe
+            raise LogsSshErreur("échec avec s3cr3t-ssh dedans")
+
+        with mock.patch.dict(config._SECRETS, {"SSH_PASSWORD_PROD": "s3cr3t-ssh"}), \
+                mock.patch.object(logs_ssh, "lister", side_effect=lister):
+            with self.assertRaises(outils.OutilErreur) as e:
+                outils.logs_ssh_fichiers(profil)
+        self.assertEqual(vu["mot_de_passe"], "s3cr3t-ssh")
+        self.assertNotIn("s3cr3t", str(e.exception))
+        self.assertNotIn("s3cr3t", (self.cache / "journal" / "outils.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual(config.nom_mot_de_passe_ssh("Canson-prod"), "SSH_PASSWORD_CANSON_PROD")
+
+    def test_profil_avec_mot_de_passe(self):
+        brut = {"sources": [{"chemin": str(self.source)}],
+                "logs": {"ssh": {"hote": "10.0.0.1", "utilisateur": "lecteur", "dossiers": ["/var/log/odatio"],
+                                 "mot_de_passe_env": "SSH_PASSWORD_PROD"}}}
+        self.assertEqual(config._profil("prod", brut, True).logs_ssh.mot_de_passe_env, "SSH_PASSWORD_PROD")

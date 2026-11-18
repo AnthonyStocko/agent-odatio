@@ -80,8 +80,9 @@ mot_de_passe_env = "RECETTE_X_DB_PASSWORD"
 #
 # [profils.production.logs.ssh]
 # hote = "serveur-logs"              # nom d'hôte, ou alias de ~/.ssh/config
-# utilisateur = "lecture-logs"       # compte du serveur qui ne peut que lire les logs
-# cle = "~/.ssh/id_ed25519_logs"     # facultatif : sinon agent SSH ou ~/.ssh/config
+# utilisateur = "lecture-logs"       # compte du serveur, en lecture seule de préférence
+# mot_de_passe_env = "SSH_PASSWORD_PRODUCTION"   # mot de passe dans le .env (saisi dans l'IHM)
+# cle = "~/.ssh/id_ed25519_logs"     # facultatif, à la place du mot de passe
 # rebond = ""                        # facultatif : serveur de rebond, ex. "moi@bastion"
 # dossiers = ["/var/log/odatio"]
 # motif = "*.log*"

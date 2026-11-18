@@ -98,21 +98,28 @@ def _onglet_projets() -> None:
                                     help="Pour une application déployée : filtre gcQL imposé à toute recherche de logs.")
         ssh = p.logs_ssh or config.LogsSsh()
         with st.expander("Logs d'un serveur par SSH (ex. la production), en lecture seule", expanded=bool(p.logs_ssh)):
-            st.caption("L'agent ne lance que des commandes fixes de lecture (lister, chercher, lire) avec le client ssh "
-                       "du poste, sans mot de passe : clé ou agent SSH. Utilise un compte du serveur qui ne peut que "
-                       "lire les logs, et connecte-toi une fois à la main (ssh <hôte>) pour enregistrer la clé du "
-                       "serveur. Les lignes de logs sont envoyées à Claude : vérifie que c'est autorisé.")
-            c1, c2, c3 = st.columns([2, 1, 1])
-            ssh_hote = c1.text_input("Hôte", value=ssh.hote, placeholder="serveur-logs ou alias de ~/.ssh/config",
+            st.caption("L'agent ne lance que des commandes fixes de lecture (lister, chercher, lire) : il ne modifie "
+                       "rien sur le serveur. Connecte-toi une fois à la main (ssh <utilisateur>@<serveur>) pour "
+                       "enregistrer la clé du serveur. Les lignes de logs sont envoyées à Claude : vérifie que c'est "
+                       "autorisé.")
+            mot_de_passe_ssh_connu = bool(ssh.mot_de_passe_env and config.secret(ssh.mot_de_passe_env))
+            c1, c2, c3 = st.columns(3)
+            ssh_hote = c1.text_input("Serveur", value=ssh.hote, placeholder="10.0.0.1 ou nom du serveur",
                                      help="Vide : pas de logs par SSH.")
-            ssh_utilisateur = c2.text_input("Utilisateur SSH", value=ssh.utilisateur, placeholder="lecture-logs")
-            ssh_port = c3.text_input("Port SSH", value=ssh.port, placeholder="22")
-            c1, c2 = st.columns(2)
-            ssh_cle = c1.text_input("Clé privée (facultatif)", value=ssh.cle, placeholder="~/.ssh/id_ed25519_logs",
-                                    help="Chemin sur ce poste. Vide : agent SSH ou ~/.ssh/config.")
-            ssh_rebond = c2.text_input("Serveur de rebond (facultatif)", value=ssh.rebond, placeholder="utilisateur@bastion")
+            ssh_utilisateur = c2.text_input("Utilisateur", value=ssh.utilisateur, placeholder="lecture-logs")
+            ssh_mot_de_passe = c3.text_input("Mot de passe", type="password",
+                                             placeholder="inchangé" if mot_de_passe_ssh_connu else "",
+                                             help="Enregistré dans le .env, jamais dans profils.toml. Vide avec une "
+                                                  "clé privée ci-dessous.")
             ssh_dossiers = st.text_area("Dossiers de logs sur le serveur", value="\n".join(ssh.dossiers), height=68,
                                         placeholder="/var/log/odatio", help="Un chemin absolu par ligne.")
+            st.caption("Options (facultatives)")
+            c1, c2, c3 = st.columns([1, 2, 2])
+            ssh_port = c1.text_input("Port SSH", value=ssh.port, placeholder="22")
+            ssh_cle = c2.text_input("Clé privée", value=ssh.cle, placeholder="~/.ssh/id_ed25519_logs",
+                                    help="À la place du mot de passe : chemin de la clé sur ce poste.")
+            ssh_rebond = c3.text_input("Serveur de rebond", value=ssh.rebond, placeholder="utilisateur@bastion",
+                                       help="Avec une clé seulement.")
             c1, c2 = st.columns(2)
             ssh_motif = c1.text_input("Fichiers retenus", value=ssh.motif,
                                       help="Motif des noms de fichiers ; *.log* inclut les fichiers compressés (.log.gz).")
@@ -212,7 +219,15 @@ def _onglet_projets() -> None:
 
         nouveaux_logs_ssh = None
         if ssh_hote.strip():
+            variable_ssh = config.nom_mot_de_passe_ssh(nom)
+            ancien_ssh = existant.logs_ssh if existant else None
+            if ssh_mot_de_passe:
+                config.enregistrer_secrets({variable_ssh: ssh_mot_de_passe})
+            elif ancien_ssh and ancien_ssh.mot_de_passe_env and ancien_ssh.mot_de_passe_env != variable_ssh:
+                # projet renommé : le mot de passe suit le nouveau nom
+                config.enregistrer_secrets({variable_ssh: config.secret(ancien_ssh.mot_de_passe_env)})
             nouveaux_logs_ssh = config.LogsSsh(
+                mot_de_passe_env=variable_ssh if config.secret(variable_ssh) else "",
                 hote=ssh_hote.strip(), utilisateur=ssh_utilisateur.strip(), port=ssh_port.strip(), cle=ssh_cle.strip(),
                 rebond=ssh_rebond.strip(), dossiers=[d.rstrip("/") or "/" for d in _lignes(ssh_dossiers)],
                 motif=ssh_motif.strip() or config.LogsSsh.motif, horodatage=ssh_horodatage or config.LogsSsh.horodatage)
@@ -294,6 +309,8 @@ def _onglet_projets() -> None:
                 config.enregistrer(config.reglages(), [x for x in profils if x.nom != choix])
                 if existant.base:
                     config.enregistrer_secrets({existant.base.mot_de_passe_env: ""})
+                if existant.logs_ssh and existant.logs_ssh.mot_de_passe_env:
+                    config.enregistrer_secrets({existant.logs_ssh.mot_de_passe_env: ""})
                 autres = [x.nom for x in profils if x.nom != choix]
                 etat.projet_a_selectionner = autres[0] if autres else NOUVEAU
                 etat.preparation = {}

@@ -141,6 +141,11 @@ def nom_mot_de_passe_application(profil: str) -> str:
     return "APP_PASSWORD_" + re.sub(r"[^A-Z0-9]+", "_", profil.upper()).strip("_")
 
 
+def nom_mot_de_passe_ssh(profil: str) -> str:
+    """Nom de la variable du .env qui porte le mot de passe SSH des logs d'un profil."""
+    return "SSH_PASSWORD_" + re.sub(r"[^A-Z0-9]+", "_", profil.upper()).strip("_")
+
+
 def nom_mot_de_passe(profil: str) -> str:
     """Nom de la variable du .env qui porte le mot de passe base d'un profil (ex. DB_PASSWORD_RECETTE_X)."""
     return "DB_PASSWORD_" + re.sub(r"[^A-Z0-9]+", "_", profil.upper()).strip("_")
@@ -281,7 +286,8 @@ def _profil(nom: str, brut: dict, interdits_par_defaut: bool) -> Profil:
                            utilisateur=str(s.get("utilisateur", "")).strip(), port=str(s.get("port", "")).strip(),
                            cle=str(s.get("cle", "")).strip(), rebond=str(s.get("rebond", "")).strip(),
                            motif=str(s.get("motif", "")).strip() or LogsSsh.motif,
-                           horodatage=str(s.get("horodatage", "")) or LogsSsh.horodatage)
+                           horodatage=str(s.get("horodatage", "")) or LogsSsh.horodatage,
+                           mot_de_passe_env=str(s.get("mot_de_passe_env", "")).strip())
         problemes = erreurs_logs_ssh(logs_ssh)
         if problemes:
             raise ConfigError(f"Profil « {nom} », logs SSH : " + " ; ".join(problemes) + ".")
@@ -364,7 +370,7 @@ def enregistrer(reglages_agent: Reglages, profils: list) -> None:
                 raise ConfigError(f"Profil « {p.nom} », logs SSH : " + " ; ".join(problemes) + ".")
             defauts = LogsSsh()
             logs["ssh"] = {k: v for k, v in asdict(p.logs_ssh).items()
-                           if v and (k in ("hote", "dossiers") or v != getattr(defauts, k))}
+                           if k != "mot_de_passe" and v and (k in ("hote", "dossiers") or v != getattr(defauts, k))}
         if logs:
             brut["logs"] = logs
         if p.base:
