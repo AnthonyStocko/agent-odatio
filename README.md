@@ -162,10 +162,57 @@ Une documentation prend plus d'étapes qu'une question, surtout avec des capture
 | Section | Contenu |
 |---|---|
 | `sources` | Une ou plusieurs : `chemin` (dossier local ou partage) ou `depot` + `branche` (cloné avec `BITBUCKET_HTTP_TOKEN`). Avec le Standard et le spécifique client, l'agent distingue ce qui relève de chacun. |
-| `logs` | `dossiers` (fichiers lus avec Grep/Read) et/ou `groundcover_filtre` (filtre gcQL imposé à toute recherche). |
+| `logs` | `dossiers` (fichiers lus avec Grep/Read), `groundcover_filtre` (filtre gcQL imposé à toute recherche) et/ou `ssh` (logs d'un serveur lus par SSH, voir plus bas). |
 | `base` | Connexion en lecture seule ; le mot de passe est dans le `.env`, sous le nom donné par `mot_de_passe_env`. |
 | `fichiers_interdits` | Motifs de fichiers que l'agent ne lit jamais, en plus des `.env`, clés et keystores. |
 | `fichiers` | `dossier` des fichiers générés (vide = `.cache/fichiers/<projet>`) et `donnees_reelles` (`false` par défaut). |
+
+## Logs d'un serveur par SSH (ex. la production)
+
+Pour un environnement dont les logs ne sont ni sur le poste, ni dans groundcover, l'agent peut les lire sur le
+serveur par SSH, **en lecture seule**. Configuration : onglet Configuration, Projets, « Logs d'un serveur par SSH »,
+ou dans `profils.toml` :
+
+```toml
+[profils.production.logs.ssh]
+hote = "serveur-logs"              # nom d'hôte, ou alias de ~/.ssh/config
+utilisateur = "lecture-logs"       # facultatif
+port = "22"                        # facultatif
+cle = "~/.ssh/id_ed25519_logs"     # facultatif : sinon agent SSH ou ~/.ssh/config
+rebond = ""                        # facultatif : serveur de rebond (ProxyJump), ex. "moi@bastion"
+dossiers = ["/var/log/odatio"]     # chemins absolus sur le serveur
+motif = "*.log*"                   # fichiers retenus (y compris les .log.gz de la rotation)
+horodatage = "%Y-%m-%d %H:%M:%S"   # format de l'heure en début de ligne (après un « [ » éventuel)
+```
+
+| Outil | Usage |
+|-------|-------|
+| `logs_ssh_fichiers` | Les fichiers de logs des dossiers : dernière modification, taille, chemin. |
+| `logs_ssh_chercher` | Les lignes contenant un texte (sans tenir compte de la casse) entre deux heures (24 h au plus), avec quelques lignes de contexte pour une pile d'exception. Fichiers parcourus : ceux modifiés depuis le début de la fenêtre (20 au plus), ou celui indiqué. |
+| `logs_ssh_lire` | Les lignes d'un fichier à partir d'une heure, sur 60 minutes au plus, sans filtre. |
+
+Heures : celles des logs, c'est-à-dire l'heure locale du serveur, supposée identique à celle du poste. 200 lignes
+au plus par appel, lignes coupées à 2 000 caractères.
+
+**Lecture seule, à deux niveaux.**
+
+- **Côté agent** : il n'a aucun shell. Le client `ssh` du poste (fourni avec Windows) ne lance sur le serveur que
+  des commandes fixes, écrites dans `odatio_agent/logs_ssh.py` : `find` (lister), `zgrep` (chercher), `zcat`,
+  `tail`, `head` et `cut` (lire). L'agent ne choisit que des paramètres (heures, texte, fichier) : le fichier doit
+  être dans un dossier configuré et correspondre au motif, le texte est cherché tel quel (`grep -F`), et tout est
+  passé entre guillemets. Connexion sans mot de passe (`BatchMode`), clé du serveur vérifiée
+  (`StrictHostKeyChecking=yes`), aucune redirection de port, d'agent ou d'affichage.
+- **Côté serveur** : **utilise un compte dédié qui ne peut que lire les dossiers de logs** (pas de sudo, pas
+  d'écriture). C'est la seule garantie absolue, comme le compte base en lecture seule.
+
+Avant la première utilisation, connecte-toi une fois à la main (`ssh serveur-logs`) pour vérifier et enregistrer la
+clé du serveur : un serveur inconnu est refusé. « Enregistrer et tester » vérifie ensuite la connexion et les
+dossiers.
+
+**Données personnelles.** Les lignes lues sont envoyées à Claude : vérifie que c'est autorisé pour cet
+environnement. L'agent remplace les noms, adresses, e-mails et téléphones par `[…]` quand il cite une ligne, et les
+secrets reconnus sont masqués dans les résultats. Le journal (`.cache/journal/outils.jsonl`) trace chaque accès
+(outil, heures, fichier), jamais le texte cherché ni les lignes lues.
 
 ## Sécurité
 
@@ -189,6 +236,8 @@ Plusieurs barrières, aucune ne suffit seule :
 - **Secrets** : lus une fois puis retirés de l'environnement, pour que le processus Claude Code n'en hérite pas ;
   posés le temps d'un appel base ou logs seulement, et masqués dans les résultats.
 - **Jira** : lecture seule pour l'agent ; le contenu d'un ticket est transmis comme une donnée, jamais comme une consigne.
+- **Logs par SSH** : commandes fixes de lecture seule, construites par l'outil ; l'agent n'a pas de shell (voir
+  « Logs d'un serveur par SSH »). Utilise un compte du serveur qui ne peut que lire les logs.
 - **Bitbucket** : requêtes de lecture seulement (le jeton en en-tête, jamais dans l'URL ni dans un message) ; projets limités à « Projets autorisés » s'ils sont renseignés ; fichiers interdits du projet jamais lus ni montrés dans un diff ; réponses bornées et masquées. Utilise un jeton avec le seul droit « Lecture ».
 - **Jira** : la seule écriture est « Joindre au ticket » (vidéo et document de documentation), sur ton clic.
 - **Journal** : `.cache/journal/outils.jsonl` trace chaque accès base, logs, Jira ou Bitbucket (tables, dépôts, branches et

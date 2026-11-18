@@ -1,5 +1,6 @@
 """
-Outils en lecture seule exposés à l'agent (et au serveur MCP) : base de données et logs groundcover.
+Outils en lecture seule exposés à l'agent (et au serveur MCP) : base de données, logs groundcover et logs lus
+par SSH sur un serveur (logs_ssh.py).
 
 Ce module ne fait qu'adapter les modules repris d'agent-savoye (tools/db_tools.py, tools/groundcover_tools.py),
 qui lisent leur configuration dans les variables d'environnement : les variables du profil (dont le mot de
@@ -18,7 +19,7 @@ import requests
 from tools import db_tools, groundcover_tools, jira_tools
 from tools.secret_tools import mask_secrets, register_secrets
 
-from . import bitbucket, config
+from . import bitbucket, config, logs_ssh
 
 config.retirer_secrets_environnement()  # db_tools et jira_tools viennent de charger le .env dans os.environ
 
@@ -131,6 +132,43 @@ def logs_rechercher(profil: config.Profil, debut: str, fin: str, recherche: str 
         raise OutilErreur(mask_secrets(str(e))[0])
     journal(profil, "logs_rechercher", details)
     return "\n".join(groundcover_tools.format_row(r) for r in lignes) or "(aucune ligne)"
+
+
+# ---------------------------------------------------------------------------
+# Logs d'un serveur lus par SSH (lecture seule, commandes fixes : voir logs_ssh.py)
+# ---------------------------------------------------------------------------
+
+def _ssh(profil: config.Profil, outil: str, details: dict, appel) -> str:
+    if not profil.logs_ssh:
+        raise OutilErreur("Aucun accès SSH aux logs n'est configuré pour ce profil.")
+    try:
+        texte = appel(profil.logs_ssh)
+    except logs_ssh.LogsSshErreur as e:
+        message = mask_secrets(str(e))[0]
+        journal(profil, outil, details, message)
+        raise OutilErreur(message)
+    journal(profil, outil, details)
+    return mask_secrets(texte)[0]
+
+
+def logs_ssh_fichiers(profil: config.Profil) -> str:
+    return _ssh(profil, "logs_ssh_fichiers", {},
+                lambda c: logs_ssh.texte_fichiers(logs_ssh.lister(c)))
+
+
+def logs_ssh_chercher(profil: config.Profil, texte: str, debut: str, fin: str, fichier: str = "",
+                      contexte: int = 0, limite: int = 50) -> str:
+    details = {"debut": str(debut)[:40], "fin": str(fin)[:40], "fichier": str(fichier)[:200],
+               "longueur_recherche": len(str(texte or ""))}
+    return _ssh(profil, "logs_ssh_chercher", details,
+                lambda c: logs_ssh.chercher(c, texte, debut, fin, fichier, contexte, limite))
+
+
+def logs_ssh_lire(profil: config.Profil, debut: str, minutes: int = 10, fichier: str = "",
+                  limite: int = logs_ssh.LIGNES_MAX) -> str:
+    details = {"debut": str(debut)[:40], "minutes": minutes, "fichier": str(fichier)[:200]}
+    return _ssh(profil, "logs_ssh_lire", details,
+                lambda c: logs_ssh.lire(c, debut, minutes, fichier, limite))
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +289,7 @@ def tester_jira() -> tuple:
 
 
 def tester(profil: config.Profil) -> list:
-    """[(élément, ok, message)] : connexion base et groundcover, pour la commande --test."""
+    """[(élément, ok, message)] : connexion base, groundcover, logs SSH et Bitbucket, pour la commande --test."""
     resultats = []
     if profil.base:
         with _environnement(profil):
@@ -268,6 +306,9 @@ def tester(profil: config.Profil) -> list:
             resultats.append(("groundcover", True, "Connexion OK"))
         except OutilErreur as e:
             resultats.append(("groundcover", False, str(e)))
+    if profil.logs_ssh:
+        ok, message = logs_ssh.tester(profil.logs_ssh)
+        resultats.append(("Logs SSH", ok, mask_secrets(message)[0]))
     if bitbucket.configure(profil):
         ok, message = bitbucket.tester(profil)
         resultats.append(("Bitbucket", ok, mask_secrets(message)[0]))

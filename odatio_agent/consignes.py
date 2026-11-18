@@ -93,6 +93,13 @@ DONNEES_REELLES = """Données personnelles : sur ce projet (base de test), tu pe
    dans le fichier ; ta réponse n'en recopie toujours aucune et signale que le fichier en contient."""
 
 
+LOGS_SSH = """Logs du serveur {hote} ({dossiers}), en lecture seule par SSH : logs_ssh_fichiers (liste),
+logs_ssh_chercher (texte entre deux heures), logs_ssh_lire (une période sans filtre). Heures des logs = heure
+locale. Cherche d'abord un texte précis sur une fenêtre étroite, puis lis autour de la ligne trouvée. Ces logs
+peuvent être ceux de la PRODUCTION et contenir des données personnelles : quand tu cites une ligne, remplace
+les noms, adresses, e-mails et téléphones de personnes par […] (garde les codes, références et messages)."""
+
+
 TICKET = """=== TÂCHE À TESTER : {cle} ===
 {utilisateur} doit tester la tâche décrite par ce ticket Jira. Aide-le à comprendre ce qu'elle change dans
 l'application et comment la vérifier : écrans et traitements concernés, règles modifiées, paramétrage et
@@ -213,6 +220,9 @@ def construire(profil: config.Profil, sources: list, logs: list, utilisateur: st
     if profil.groundcover_filtre:
         blocs_logs.append("Logs applicatifs dans groundcover : outil logs_rechercher (heures en UTC, fenêtre de "
                           "30 minutes au plus ; recherche en texte libre ou filtres gcQL comme level:error, sans pipe).")
+    if profil.logs_ssh:
+        blocs_logs.append(LOGS_SSH.format(hote=profil.logs_ssh.hote,
+                                          dossiers=", ".join(profil.logs_ssh.dossiers)))
     logs_txt = ("\n" + "\n".join(blocs_logs) + "\n") if blocs_logs else "\nAucun accès aux logs pour cet environnement.\n"
 
     if profil.base:

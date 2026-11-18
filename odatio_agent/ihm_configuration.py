@@ -95,6 +95,28 @@ def _onglet_projets() -> None:
         groundcover = st.text_input("Filtre groundcover (facultatif)", value=p.groundcover_filtre,
                                     placeholder="namespace:canson-recette",
                                     help="Pour une application déployée : filtre gcQL imposé à toute recherche de logs.")
+        ssh = p.logs_ssh or config.LogsSsh()
+        with st.expander("Logs d'un serveur par SSH (ex. la production), en lecture seule", expanded=bool(p.logs_ssh)):
+            st.caption("L'agent ne lance que des commandes fixes de lecture (lister, chercher, lire) avec le client ssh "
+                       "du poste, sans mot de passe : clé ou agent SSH. Utilise un compte du serveur qui ne peut que "
+                       "lire les logs, et connecte-toi une fois à la main (ssh <hôte>) pour enregistrer la clé du "
+                       "serveur. Les lignes de logs sont envoyées à Claude : vérifie que c'est autorisé.")
+            c1, c2, c3 = st.columns([2, 1, 1])
+            ssh_hote = c1.text_input("Hôte", value=ssh.hote, placeholder="serveur-logs ou alias de ~/.ssh/config",
+                                     help="Vide : pas de logs par SSH.")
+            ssh_utilisateur = c2.text_input("Utilisateur SSH", value=ssh.utilisateur, placeholder="lecture-logs")
+            ssh_port = c3.text_input("Port SSH", value=ssh.port, placeholder="22")
+            c1, c2 = st.columns(2)
+            ssh_cle = c1.text_input("Clé privée (facultatif)", value=ssh.cle, placeholder="~/.ssh/id_ed25519_logs",
+                                    help="Chemin sur ce poste. Vide : agent SSH ou ~/.ssh/config.")
+            ssh_rebond = c2.text_input("Serveur de rebond (facultatif)", value=ssh.rebond, placeholder="utilisateur@bastion")
+            ssh_dossiers = st.text_area("Dossiers de logs sur le serveur", value="\n".join(ssh.dossiers), height=68,
+                                        placeholder="/var/log/odatio", help="Un chemin absolu par ligne.")
+            c1, c2 = st.columns(2)
+            ssh_motif = c1.text_input("Fichiers retenus", value=ssh.motif,
+                                      help="Motif des noms de fichiers ; *.log* inclut les fichiers compressés (.log.gz).")
+            ssh_horodatage = c2.text_input("Format de l'heure en début de ligne", value=ssh.horodatage,
+                                           help="Format strftime, ex. %Y-%m-%d %H:%M:%S pour 2026-11-18 09:41:02,123.")
 
         st.markdown("**Base de données** (compte en lecture seule de préférence)")
         c1, c2, c3 = st.columns([1, 2, 1])
@@ -183,6 +205,17 @@ def _onglet_projets() -> None:
                 st.error(e)
             return
 
+        nouveaux_logs_ssh = None
+        if ssh_hote.strip():
+            nouveaux_logs_ssh = config.LogsSsh(
+                hote=ssh_hote.strip(), utilisateur=ssh_utilisateur.strip(), port=ssh_port.strip(), cle=ssh_cle.strip(),
+                rebond=ssh_rebond.strip(), dossiers=[d.rstrip("/") or "/" for d in _lignes(ssh_dossiers)],
+                motif=ssh_motif.strip() or config.LogsSsh.motif, horodatage=ssh_horodatage or config.LogsSsh.horodatage)
+            problemes = config.erreurs_logs_ssh(nouveaux_logs_ssh)
+            if problemes:
+                st.error("Logs par SSH : " + " ; ".join(problemes) + ".")
+                return
+
         erreur = config.erreur_dossier_fichiers(config.Profil(
             nom=nom, sources=liste_sources, dossiers_logs=_lignes(dossiers_logs),
             dossier_fichiers=dossier_fichiers.strip()))
@@ -214,7 +247,8 @@ def _onglet_projets() -> None:
                                 application=nouvelle_application,
                                 dossiers_logs=_lignes(dossiers_logs), groundcover_filtre=groundcover.strip(),
                                 base=nouvelle_base, fichiers_interdits=_lignes(interdits),
-                                dossier_fichiers=dossier_fichiers.strip(), donnees_reelles=donnees_reelles)
+                                dossier_fichiers=dossier_fichiers.strip(), donnees_reelles=donnees_reelles,
+                                logs_ssh=nouveaux_logs_ssh)
         liste = [nouveau if x.nom == choix else x for x in profils] if existant else profils + [nouveau]
         try:
             config.enregistrer(config.reglages(), liste)
