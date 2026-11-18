@@ -39,6 +39,22 @@ def creer_serveur(profil: config.Profil) -> MCPServer:
         def logs_rechercher(debut: str, fin: str, recherche: str = "", limite: int = 50) -> str:
             return outils.logs_rechercher(profil, debut, fin, recherche, limite)
 
+    if profil.logs_ssh:
+        @serveur.tool(description="Logs du serveur lus par SSH (lecture seule) : liste des fichiers de logs.")
+        def logs_ssh_fichiers() -> str:
+            return outils.logs_ssh_fichiers(profil)
+
+        @serveur.tool(description="Logs du serveur lus par SSH (lecture seule) : lignes contenant un texte entre deux "
+                                  "heures (ISO, heure locale des logs ; 24 h au plus), avec N lignes de contexte.")
+        def logs_ssh_chercher(texte: str, debut: str, fin: str, fichier: str = "", contexte: int = 0,
+                              limite: int = 50) -> str:
+            return outils.logs_ssh_chercher(profil, texte, debut, fin, fichier, contexte, limite)
+
+        @serveur.tool(description="Logs du serveur lus par SSH (lecture seule) : lignes à partir d'une heure, sur "
+                                  "quelques minutes (60 au plus), sans filtre.")
+        def logs_ssh_lire(debut: str, minutes: int = 10, fichier: str = "", limite: int = 200) -> str:
+            return outils.logs_ssh_lire(profil, debut, minutes, fichier, limite)
+
     if bitbucket.configure(profil):
         @serveur.tool(description="Bitbucket : dépôts lisibles (filtre par nom, clé de projet).")
         def bitbucket_depots(recherche: str = "", projet: str = "") -> str:

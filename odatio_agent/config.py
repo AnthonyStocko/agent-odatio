@@ -3,7 +3,8 @@ Configuration de l'agent : profils d'environnement (profils.toml) et secrets (.e
 
 Un profil décrit une application Odatio à interroger (ton poste, une recette client…) :
 - ses sources : dossiers locaux et/ou dépôts Git (clonés dans .cache/sources) ;
-- ses logs : dossiers locaux ou partagés (lus avec Read/Grep) et/ou un filtre groundcover ;
+- ses logs : dossiers locaux ou partagés (lus avec Read/Grep), un filtre groundcover et/ou des dossiers sur un
+  serveur lus par SSH en lecture seule (ex. la production, voir logs_ssh.py) ;
 - sa base : connexion en lecture seule (le mot de passe reste dans le .env, désigné par mot_de_passe_env) ;
 - ses fichiers générés : dossier où l'agent écrit les fichiers d'interface demandés (.cache/fichiers/<profil>
   par défaut), et le choix d'y garder ou non les données réelles.
@@ -19,6 +20,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from dotenv import dotenv_values, set_key, unset_key
+
+from .logs_ssh import LogsSsh, erreurs as erreurs_logs_ssh
 
 RACINE = Path(__file__).resolve().parent.parent
 FICHIER_PROFILS = RACINE / "profils.toml"
@@ -77,6 +80,7 @@ class Profil:
     dossier_fichiers: str = ""     # fichiers d'interface générés ; vide = .cache/fichiers/<profil>
     donnees_reelles: bool = False  # garder noms, adresses… dans les fichiers générés (base de test seulement)
     application: Application | None = None
+    logs_ssh: LogsSsh | None = None   # logs d'un serveur lus par SSH, en lecture seule
 
 
 @dataclass
@@ -242,8 +246,20 @@ def _profil(nom: str, brut: dict, interdits_par_defaut: bool) -> Profil:
                                   mot_de_passe_env=str(a.get("mot_de_passe_env", "")).strip(),
                                   actions=bool(a.get("actions", False)))
 
+    logs_ssh = None
+    if logs.get("ssh"):
+        s = logs["ssh"]
+        logs_ssh = LogsSsh(hote=str(s.get("hote", "")).strip(), dossiers=[str(d).strip() for d in s.get("dossiers", [])],
+                           utilisateur=str(s.get("utilisateur", "")).strip(), port=str(s.get("port", "")).strip(),
+                           cle=str(s.get("cle", "")).strip(), rebond=str(s.get("rebond", "")).strip(),
+                           motif=str(s.get("motif", "")).strip() or LogsSsh.motif,
+                           horodatage=str(s.get("horodatage", "")) or LogsSsh.horodatage)
+        problemes = erreurs_logs_ssh(logs_ssh)
+        if problemes:
+            raise ConfigError(f"Profil « {nom} », logs SSH : " + " ; ".join(problemes) + ".")
+
     return Profil(nom=nom, description=str(brut.get("description", "")).strip(), sources=sources,
-                  application=application,
+                  application=application, logs_ssh=logs_ssh,
                   dossiers_logs=[str(d) for d in logs.get("dossiers", [])],
                   groundcover_filtre=str(logs.get("groundcover_filtre", "")).strip(), base=base,
                   fichiers_interdits=(INTERDITS_PAR_DEFAUT if interdits_par_defaut else [])
@@ -314,6 +330,13 @@ def enregistrer(reglages_agent: Reglages, profils: list) -> None:
             logs["dossiers"] = list(p.dossiers_logs)
         if p.groundcover_filtre:
             logs["groundcover_filtre"] = p.groundcover_filtre
+        if p.logs_ssh and p.logs_ssh.hote:
+            problemes = erreurs_logs_ssh(p.logs_ssh)
+            if problemes:
+                raise ConfigError(f"Profil « {p.nom} », logs SSH : " + " ; ".join(problemes) + ".")
+            defauts = LogsSsh()
+            logs["ssh"] = {k: v for k, v in asdict(p.logs_ssh).items()
+                           if v and (k in ("hote", "dossiers") or v != getattr(defauts, k))}
         if logs:
             brut["logs"] = logs
         if p.base:

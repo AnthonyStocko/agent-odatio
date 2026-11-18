@@ -67,3 +67,22 @@ nom = "ODATIO"
 utilisateur = "LECTURE_SEULE"
 schema = "ODATIO"
 mot_de_passe_env = "RECETTE_X_DB_PASSWORD"
+
+# ---------------------------------------------------------------------------------------------
+# Production : logs lus sur le serveur par SSH, en lecture seule (voir le README)
+# ---------------------------------------------------------------------------------------------
+# [profils.production]
+# description = "Production du client X (logs seulement)"
+#
+# [[profils.production.sources]]
+# nom = "standard"
+# chemin = "C:/dev/odatio-standard"
+#
+# [profils.production.logs.ssh]
+# hote = "serveur-logs"              # nom d'hôte, ou alias de ~/.ssh/config
+# utilisateur = "lecture-logs"       # compte du serveur qui ne peut que lire les logs
+# cle = "~/.ssh/id_ed25519_logs"     # facultatif : sinon agent SSH ou ~/.ssh/config
+# rebond = ""                        # facultatif : serveur de rebond, ex. "moi@bastion"
+# dossiers = ["/var/log/odatio"]
+# motif = "*.log*"
+# horodatage = "%Y-%m-%d %H:%M:%S"

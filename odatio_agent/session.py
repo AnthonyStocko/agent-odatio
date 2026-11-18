@@ -15,7 +15,7 @@ from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKCli
 
 from pathlib import Path
 
-from . import bitbucket, config, consignes, documentation, ecran, fichiers, outils
+from . import bitbucket, config, consignes, documentation, ecran, fichiers, logs_ssh, outils
 from .garde import creer_garde
 
 SERVEUR = "odatio"
@@ -141,6 +141,9 @@ class Session:
 
             liste.append(logs_rechercher)
 
+        if profil.logs_ssh:
+            liste += self._outils_logs_ssh(executer)
+
         if config.jira_configure():
             @tool("jira_ticket", "Lit un ticket Jira (titre, description, épopée parente, fiches liées), en lecture "
                   "seule. Utile pour un ticket cité dans la question ou lié à la tâche étudiée.",
@@ -161,6 +164,47 @@ class Session:
             liste += self._outils_ecran()
         liste += self._outils_fichiers()
         return liste
+
+    def _outils_logs_ssh(self, executer) -> list:
+        """Logs d'un serveur (ex. la production) lus par SSH : commandes fixes en lecture seule (logs_ssh.py)."""
+        heures = ("Heures ISO 8601 à l'heure des logs (heure locale, ex. 2026-11-18T09:41:00) ; une heure en UTC "
+                  "(suffixe Z) est convertie.")
+
+        @tool("logs_ssh_fichiers", "Liste les fichiers de logs du serveur (lecture seule par SSH) : dernière "
+              "modification, taille, chemin complet. Utile pour choisir le fichier d'une période.",
+              {"type": "object", "properties": {}})
+        async def logs_ssh_fichiers(args):
+            return await executer(outils.logs_ssh_fichiers)
+
+        @tool("logs_ssh_chercher", "Cherche un texte (code, référence, nom d'exception ; sans tenir compte de la "
+              "casse) dans les logs du serveur, entre deux heures (24 heures au plus). " + heures + " 'contexte' : "
+              "lignes gardées après chaque ligne trouvée (pile d'exception), 30 au plus. 'fichier' : chemin complet "
+              "donné par logs_ssh_fichiers (vide = les fichiers modifiés depuis le début de la fenêtre).",
+              {"type": "object", "properties": {
+                  "texte": {"type": "string"}, "debut": {"type": "string"}, "fin": {"type": "string"},
+                  "fichier": {"type": "string"},
+                  "contexte": {"type": "integer", "minimum": 0, "maximum": 30},
+                  "limite": {"type": "integer", "minimum": 1, "maximum": logs_ssh.LIGNES_MAX}},
+               "required": ["texte", "debut", "fin"]})
+        async def logs_ssh_chercher(args):
+            return await executer(outils.logs_ssh_chercher, args["texte"], args["debut"], args["fin"],
+                                  args.get("fichier", ""), int(args.get("contexte") or 0),
+                                  int(args.get("limite") or 50))
+
+        @tool("logs_ssh_lire", "Lit les logs du serveur à partir d'une heure, sans filtre, sur quelques minutes "
+              "(60 au plus), pour voir ce qui s'est passé autour d'un événement. " + heures + " 'fichier' : chemin "
+              "complet donné par logs_ssh_fichiers (vide = le fichier qui couvre l'heure demandée).",
+              {"type": "object", "properties": {
+                  "debut": {"type": "string"}, "minutes": {"type": "integer", "minimum": 1,
+                                                            "maximum": logs_ssh.MINUTES_LECTURE_MAX},
+                  "fichier": {"type": "string"},
+                  "limite": {"type": "integer", "minimum": 1, "maximum": logs_ssh.LIGNES_MAX}},
+               "required": ["debut"]})
+        async def logs_ssh_lire(args):
+            return await executer(outils.logs_ssh_lire, args["debut"], int(args.get("minutes") or 10),
+                                  args.get("fichier", ""), int(args.get("limite") or logs_ssh.LIGNES_MAX))
+
+        return [logs_ssh_fichiers, logs_ssh_chercher, logs_ssh_lire]
 
     def _outils_fichiers(self) -> list:
         profil = self.profil
