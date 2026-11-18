@@ -84,7 +84,8 @@ def _onglet_projets() -> None:
             column_config={
                 "nom": st.column_config.TextColumn("Nom", help="Ex. standard, canson"),
                 "chemin": st.column_config.TextColumn("Dossier local", help="Ex. C:/development/branch_dev", width="large"),
-                "depot": st.column_config.TextColumn("Dépôt Git", help="Ex. https://git.kiscloud.io/scm/…/….git", width="large"),
+                "depot": st.column_config.TextColumn("Dépôt Git", help="Adresse de clonage (…/scm/…/….git) ou adresse de la page du dépôt dans Bitbucket "
+                                                     "(…/projects/…/repos/…) : elle est convertie.", width="large"),
                 "branche": st.column_config.TextColumn("Branche", help="Pour un dépôt Git ; vide = branche par défaut"),
             })
 
@@ -192,9 +193,13 @@ def _onglet_projets() -> None:
             if ligne["chemin"] and ligne["depot"]:
                 erreurs.append(f"Source n° {i} : renseigne soit un dossier, soit un dépôt, pas les deux.")
                 continue
-            defaut = Path(ligne["chemin"]).name if ligne["chemin"] else ligne["depot"].rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
-            liste_sources.append(config.Source(nom=ligne["nom"] or defaut, chemin=ligne["chemin"],
-                                               depot=ligne["depot"], branche=ligne["branche"]))
+            if ligne["depot"]:
+                source = config.source_depot(ligne["nom"], ligne["depot"], ligne["branche"])
+            else:
+                source = config.Source(nom=ligne["nom"] or Path(ligne["chemin"]).name, chemin=ligne["chemin"],
+                                       branche=ligne["branche"])
+            defaut = source.nom
+            liste_sources.append(source)
             if ligne["chemin"] and not Path(ligne["chemin"]).expanduser().is_dir():
                 avertissements.append((f"Source {ligne['nom'] or defaut}", False,
                                        f"le dossier {ligne['chemin']} n'existe pas sur ce poste"))

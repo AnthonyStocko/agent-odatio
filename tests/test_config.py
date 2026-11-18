@@ -60,3 +60,30 @@ class TestDossierFichiers(AvecDossierTemporaire):
 if __name__ == "__main__":
     import unittest
     unittest.main()
+
+
+class TestAdresseDepot(AvecDossierTemporaire):
+    def test_page_bitbucket_convertie_en_adresse_de_clonage(self):
+        cas = {
+            "https://git.exemple.io/projects/ABC/repos/abc-specifique/":
+                ("https://git.exemple.io/scm/abc/abc-specifique.git", ""),
+            "https://git.exemple.io/projects/ABC/repos/abc-specifique/browse?at=refs%2Fheads%2Fdev":
+                ("https://git.exemple.io/scm/abc/abc-specifique.git", "dev"),
+            "https://git.exemple.io/bitbucket/projects/ODA/repos/standard/browse/src?at=refs/heads/release/v1.2":
+                ("https://git.exemple.io/bitbucket/scm/oda/standard.git", "release/v1.2"),
+            "https://git.exemple.io/projects/ABC/repos/abc/browse?at=v1.0": ("https://git.exemple.io/scm/abc/abc.git", ""),
+            "https://git.exemple.io/scm/abc/abc-specifique.git": ("https://git.exemple.io/scm/abc/abc-specifique.git", ""),
+            "git@github.com:exemple/depot.git": ("git@github.com:exemple/depot.git", ""),
+        }
+        for adresse, attendu in cas.items():
+            with self.subTest(adresse):
+                self.assertEqual(config.url_clone(adresse), attendu)
+
+    def test_source_de_profil(self):
+        brut = {"sources": [{"depot": "https://git.exemple.io/projects/ABC/repos/abc-specifique/browse?at=refs/heads/dev"},
+                            {"nom": "standard", "depot": "https://git.exemple.io/projects/ODA/repos/standard",
+                             "branche": "main"}]}
+        sources = config._profil("p", brut, True).sources
+        self.assertEqual([(s.nom, s.depot, s.branche) for s in sources],
+                         [("abc-specifique", "https://git.exemple.io/scm/abc/abc-specifique.git", "dev"),
+                          ("standard", "https://git.exemple.io/scm/oda/standard.git", "main")])

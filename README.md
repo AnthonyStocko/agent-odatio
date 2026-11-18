@@ -161,7 +161,7 @@ Une documentation prend plus d'étapes qu'une question, surtout avec des capture
 
 | Section | Contenu |
 |---|---|
-| `sources` | Une ou plusieurs : `chemin` (dossier local ou partage) ou `depot` + `branche` (cloné avec `BITBUCKET_HTTP_TOKEN`). Avec le Standard et le spécifique client, l'agent distingue ce qui relève de chacun. |
+| `sources` | Une ou plusieurs : `chemin` (dossier local ou partage) ou `depot` + `branche` (cloné avec `BITBUCKET_HTTP_TOKEN` ; l'adresse de la page du dépôt dans Bitbucket, `…/projects/…/repos/…`, est convertie en adresse de clonage, avec la branche affichée si elle y figure). Avec le Standard et le spécifique client, l'agent distingue ce qui relève de chacun. |
 | `logs` | `dossiers` (fichiers lus avec Grep/Read), `groundcover_filtre` (filtre gcQL imposé à toute recherche) et/ou `ssh` (logs d'un serveur lus par SSH, voir plus bas). |
 | `base` | Connexion en lecture seule ; le mot de passe est dans le `.env`, sous le nom donné par `mot_de_passe_env`. |
 | `fichiers_interdits` | Motifs de fichiers que l'agent ne lit jamais, en plus des `.env`, clés et keystores. |
