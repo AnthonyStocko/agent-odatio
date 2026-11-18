@@ -165,6 +165,66 @@ class Session:
         liste += self._outils_fichiers()
         return liste
 
+    def _outils_bitbucket(self, executer) -> list:
+        depots_profil = ", ".join(s.nom for s in self.profil.sources if s.depot) or "aucun"
+        depot_desc = (f"dépôt : nom d'une source du profil ({depots_profil}), « PROJET/depot » ou URL Bitbucket")
+
+        def schema(proprietes: dict, requis: list) -> dict:
+            return {"type": "object", "properties": proprietes, "required": requis}
+
+        texte = {"type": "string"}
+        depot = {"type": "string", "description": depot_desc}
+        branche = {"type": "string", "description": "branche (défaut : celle du profil, sinon celle du dépôt)"}
+
+        @tool("bitbucket_depots", "Bitbucket : liste les dépôts lisibles (filtre par nom et/ou clé de projet). "
+              "Pour trouver une bibliothèque ou le dépôt d'un autre client absent des sources.",
+              schema({"recherche": texte, "projet": {"type": "string", "description": "clé de projet, ex. STD"}}, []))
+        async def bitbucket_depots(args):
+            return await executer(outils.bitbucket_depots, args.get("recherche", ""), args.get("projet", ""))
+
+        @tool("bitbucket_branches", "Bitbucket : cherche les branches dont le nom contient 'filtre' (ex. la clé du "
+              "ticket ODA-1234), les plus récentes d'abord. Sans 'depot' ni 'projet' : dans les dépôts du profil.",
+              schema({"filtre": texte, "depot": depot,
+                      "projet": {"type": "string", "description": "tous les dépôts d'un projet (60 au plus)"}}, []))
+        async def bitbucket_branches(args):
+            return await executer(outils.bitbucket_branches, args.get("filtre", ""), args.get("depot", ""),
+                                  args.get("projet", ""))
+
+        @tool("bitbucket_fichiers", "Bitbucket : liste les fichiers d'un dépôt sur une branche (récursif depuis "
+              "'dossier'), filtrés par 'motif' (*.java, *Vague*, texte contenu dans le chemin).",
+              schema({"depot": depot, "branche": branche, "dossier": texte, "motif": texte}, ["depot"]))
+        async def bitbucket_fichiers(args):
+            return await executer(outils.bitbucket_fichiers, args["depot"], args.get("branche", ""),
+                                  args.get("dossier", ""), args.get("motif", ""))
+
+        @tool("bitbucket_lire", "Bitbucket : lit un fichier (lignes numérotées, 400 au plus à partir de 'debut') ou "
+              "liste un dossier, sur une branche donnée. Pour du code absent des sources clonées.",
+              schema({"depot": depot, "chemin": texte, "branche": branche,
+                      "debut": {"type": "integer", "minimum": 1},
+                      "nombre": {"type": "integer", "minimum": 1, "maximum": bitbucket.LIGNES_MAX}},
+                     ["depot", "chemin"]))
+        async def bitbucket_lire(args):
+            return await executer(outils.bitbucket_lire, args["depot"], args["chemin"], args.get("branche", ""),
+                                   int(args.get("debut") or 1), int(args.get("nombre") or bitbucket.LIGNES_MAX))
+
+        @tool("bitbucket_comparer", "Bitbucket : ce qu'une branche apporte par rapport à sa cible ('vers' ; par "
+              "défaut la cible de sa pull request, sinon la branche du profil) : pull request, commits et fichiers "
+              "modifiés ; avec 'fichier', le diff de ce fichier.",
+              schema({"depot": depot, "branche": texte, "vers": texte, "fichier": texte}, ["depot", "branche"]))
+        async def bitbucket_comparer(args):
+            return await executer(outils.bitbucket_comparer, args["depot"], args["branche"], args.get("vers", ""),
+                                  args.get("fichier", ""))
+
+        @tool("bitbucket_chercher", "Bitbucket : recherche de code dans tous les dépôts lisibles (ou un dépôt, un "
+              "projet). N'indexe que la branche par défaut de chaque dépôt ; peut être indisponible sur le serveur.",
+              schema({"texte": texte, "depot": depot, "projet": texte}, ["texte"]))
+        async def bitbucket_chercher(args):
+            return await executer(outils.bitbucket_chercher, args["texte"], args.get("depot", ""),
+                                  args.get("projet", ""))
+
+        return [bitbucket_depots, bitbucket_branches, bitbucket_fichiers, bitbucket_lire, bitbucket_comparer,
+                bitbucket_chercher]
+
     def _outils_logs_ssh(self, executer) -> list:
         """Logs d'un serveur (ex. la production) lus par SSH : commandes fixes en lecture seule (logs_ssh.py)."""
         heures = ("Heures ISO 8601 à l'heure des logs (heure locale, ex. 2026-11-18T09:41:00) ; une heure en UTC "
