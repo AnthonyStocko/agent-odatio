@@ -5,7 +5,7 @@ client MCP, pour un profil donné. Facultatif : l'agent (agent.py) n'en a pas be
 Mode --manager (sans --profil) : serveur utilisé par agent-manager-savoye, avec deux outils en lecture seule,
 « projets » et « question » (l'agent répond à une question ponctuelle, sans rien écrire : odatio_agent/manager.py).
 
-  pip install "mcp>=2,<3"
+  (le paquet mcp est dans requirements.txt)
   claude mcp add odatio-recette -- C:\\odatio-agent\\venv\\Scripts\\python.exe C:\\odatio-agent\\mcp_server.py --profil recette-x
 
 Les sources ne sont pas exposées ici : dans Claude Code, lance simplement `claude` dans le dossier des sources.
