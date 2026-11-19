@@ -45,13 +45,16 @@ async def _vers_texte(coroutine) -> dict:
 class Session:
     def __init__(self, profil: config.Profil, sources: list, logs: list, reglages: config.Reglages,
                  utilisateur: str = "", reprise: str = "", ticket: dict | None = None,
-                 dossier_documentation: Path | None = None):
+                 dossier_documentation: Path | None = None, lecture_seule: bool = False):
         """reprise : identifiant d'une conversation précédente à poursuivre (Bilan.session_id), utilisé par
         l'IHM qui ouvre une session par question. ticket : tâche Jira à tester (outils.jira_ticket), donnée
         à l'agent comme contexte. dossier_documentation : dossier déjà préparé (captures d'écran déposées), ou
         documentation déjà enregistrée à poursuivre (documentation_demarrer renvoie alors le document existant) ;
-        sinon documentation_demarrer en crée un quand l'utilisateur en demande une."""
+        sinon documentation_demarrer en crée un quand l'utilisateur en demande une. lecture_seule : question
+        transmise par le manager (mcp_server.py --manager) : ni fichier d'interface, ni documentation, ni
+        navigation dans l'application, seulement lire et répondre."""
         self.profil, self.reglages, self.ticket = profil, reglages, ticket
+        self.lecture_seule = lecture_seule
         self.requetes_base, self.generation, self.fichiers = 0, False, []
         self.dossier_fourni = Path(dossier_documentation) if dossier_documentation else None
         self.dossier_documentation = self.dossier_fourni
@@ -65,7 +68,7 @@ class Session:
         noms_maison = [f"mcp__{SERVEUR}__{t.name}" for t in outils_maison]
 
         self.options = ClaudeAgentOptions(
-            system_prompt=consignes.construire(profil, sources, logs, utilisateur, reglages, ticket),
+            system_prompt=consignes.construire(profil, sources, logs, utilisateur, reglages, ticket, lecture_seule),
             tools=OUTILS_FICHIERS,                       # aucun autre outil intégré : ni Bash, ni Edit, ni Write
             allowed_tools=OUTILS_FICHIERS + noms_maison,  # autorisés sans confirmation
             permission_mode="dontAsk",                    # tout le reste est refusé
@@ -159,6 +162,8 @@ class Session:
 
         if bitbucket.configure(profil):
             liste += self._outils_bitbucket(executer)
+        if self.lecture_seule:          # question du manager : aucun outil qui écrit ou agit
+            return liste
         liste += self._outils_documentation()
         if ecran.disponible():
             liste += self._outils_ecran()

@@ -2,6 +2,9 @@
 Serveur MCP (stdio) : les mêmes outils base, logs et Bitbucket, utilisables depuis Claude Code, Claude Desktop ou tout
 client MCP, pour un profil donné. Facultatif : l'agent (agent.py) n'en a pas besoin.
 
+Mode --manager (sans --profil) : serveur utilisé par agent-manager-savoye, avec deux outils en lecture seule,
+« projets » et « question » (l'agent répond à une question ponctuelle, sans rien écrire : odatio_agent/manager.py).
+
   pip install "mcp>=2,<3"
   claude mcp add odatio-recette -- C:\\odatio-agent\\venv\\Scripts\\python.exe C:\\odatio-agent\\mcp_server.py --profil recette-x
 
@@ -12,7 +15,7 @@ import sys
 
 from mcp.server.mcpserver import MCPServer
 
-from odatio_agent import bitbucket, config, outils
+from odatio_agent import bitbucket, config, manager, outils
 
 
 def creer_serveur(profil: config.Profil) -> MCPServer:
@@ -85,11 +88,35 @@ def creer_serveur(profil: config.Profil) -> MCPServer:
     return serveur
 
 
+def creer_serveur_manager() -> MCPServer:
+    """Serveur du manager : l'agent répond à une question, en lecture seule."""
+    serveur = MCPServer("odatio", instructions="Agent fonctionnel Odatio, en lecture seule : il répond à des questions "
+                                               "fonctionnelles sur une application Odatio (sources, base, logs).")
+
+    @serveur.tool(description="Liste les projets (applications Odatio) que l'agent peut consulter, avec leurs accès.")
+    def projets() -> str:
+        return manager.projets()
+
+    @serveur.tool(description="Pose une question fonctionnelle ponctuelle à l'agent Odatio sur un projet (nom donné par "
+                              "« projets »), en lecture seule : il lit les sources, la base et les logs, puis répond "
+                              "avec ses preuves. Peut prendre quelques minutes. 'ticket' : clé Jira facultative donnée "
+                              "en contexte (ex. ODA-1234). Ne génère ni fichier ni documentation.")
+    async def question(projet: str, question: str, ticket: str = "") -> str:
+        return await manager.question(projet, question, ticket)
+
+    return serveur
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Serveur MCP Odatio (lecture seule)")
-    parser.add_argument("--profil", required=True)
+    groupe = parser.add_mutually_exclusive_group(required=True)
+    groupe.add_argument("--profil")
+    groupe.add_argument("--manager", action="store_true", help="serveur d'agent-manager-savoye (projets, question)")
     args = parser.parse_args()
     config.charger_secrets()
+    if args.manager:
+        creer_serveur_manager().run("stdio")
+        return 0
     try:
         profil = config.charger_profil(args.profil)
     except config.ConfigError as e:

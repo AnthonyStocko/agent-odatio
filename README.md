@@ -278,6 +278,13 @@ venv\Scripts\python.exe -m pip install "mcp>=2,<3"
 claude mcp add odatio-local -- C:\odatio-agent\venv\Scripts\python.exe C:\odatio-agent\mcp_server.py --profil local
 ```
 
+### Mode manager
+
+`mcp_server.py --manager` (sans `--profil`) est le serveur qu'utilise agent-manager-savoye. Il n'a que deux outils :
+`projets` (les projets et leurs accès) et `question` (une question ponctuelle sur un projet). L'agent y répond
+**en lecture seule** : ni fichier d'interface, ni documentation, ni navigation dans l'application. La conversation
+est enregistrée dans l'historique du projet : tu la retrouves et la poursuis dans la barre latérale de l'agent.
+
 ## Mettre à jour les modules repris d'agent-savoye
 
 Recopie `db_tools.py`, `groundcover_tools.py`, `secret_tools.py` et `jira_tools.py` depuis `agent-savoye/tools/`, puis relance
