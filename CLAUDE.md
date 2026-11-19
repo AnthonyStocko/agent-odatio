@@ -75,6 +75,10 @@ committer. Les modèles sont `.env.example` et `profils.example.toml`.
   identifiant (casse et séparateurs ignorés) n'apporte que ses réglages propres (`_fusion`). `enregistrer` ne
   réécrit pas les profils gérés et garde leurs entrées locales telles quelles.
 - Lancé seul, rien ne change.
+- **Liens préremplis du manager** (`odatio_agent/lien_manager.py`, `ihm_assistant._lien_manager_*`) : une adresse
+  `?source=manager&projet=…&ticket=…&conversation=…&question=…&contexte=…` choisit le projet, reprend la
+  conversation enregistrée par une question du manager (`manager.question`), charge la tâche Jira (lecture) et
+  préremplit une question, posée seulement sur clic (« Poser cette question »). Appliqué une fois par session.
 
 ## 3. Prompts, outils et évals
 

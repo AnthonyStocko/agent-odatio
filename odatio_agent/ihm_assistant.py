@@ -19,7 +19,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from . import config, documentation, historique, outils, sources, video
+from . import config, documentation, historique, lien_manager, outils, sources, video
 from .etapes import resumer
 from .session import Session
 
@@ -39,6 +39,9 @@ def _etat():
     etat.setdefault("ticket", None)       # {"cle", "titre", "texte"} de la tâche à tester
     etat.setdefault("documentation", None)  # {"dossier", "sujet", "fichiers"} de la dernière documentation produite
     etat.setdefault("avis", "")           # message à afficher une fois (conversation d'une tâche reprise)
+    etat.setdefault("lien", {})           # lien du manager en cours d'application ou affiché (lien_manager)
+    etat.setdefault("lien_signature", "")
+    etat.setdefault("question_manager", "")  # question préremplie par le manager, posée sur clic
     return etat
 
 
@@ -447,12 +450,82 @@ def _barre_laterale(page_configuration) -> config.Profil | None:
     return profil
 
 
+def _lien_manager_projet() -> None:
+    """Lien du manager (lien_manager), une fois par session : projet choisi avant la barre latérale."""
+    etat = st.session_state
+    lien = lien_manager.lire(st.query_params.to_dict())
+    if not lien or lien_manager.signature(lien) == etat.lien_signature:
+        return
+    etat.lien_signature = lien_manager.signature(lien)
+    etat.lien = {**lien, "a_appliquer": True}
+    nom = lien_manager.projet(lien.get("projet", ""), config.noms_profils())
+    if nom and nom != etat.profil_actif:
+        etat.profil_actif = nom
+        nouvelle_conversation()
+    elif lien.get("projet") and not nom:
+        etat.avis = f"Projet « {lien['projet']} » transmis par le manager inconnu de l'agent : choisis-le à gauche."
+
+
+def _lien_manager_suite(profil: config.Profil) -> None:
+    """Suite du lien, le projet chargé : conversation reprise, tâche chargée, question préremplie."""
+    etat = st.session_state
+    lien = etat.lien
+    if not lien.get("a_appliquer"):
+        return
+    lien.pop("a_appliquer")
+    if lien.get("conversation"):
+        try:
+            reprendre_conversation(lien["conversation"])
+        except config.ConfigError as e:
+            st.warning(f"Conversation transmise par le manager : {e}")
+    if lien.get("ticket") and not (etat.ticket and etat.ticket.get("cle") == lien["ticket"]) \
+            and config.jira_configure():
+        try:
+            with st.spinner("Lecture du ticket…"):
+                ticket = outils.jira_ticket(lien["ticket"], profil)
+            if lien.get("conversation"):
+                etat.ticket = ticket       # conversation reprise : elle garde ses échanges
+            else:
+                charger_tache(ticket)
+        except (outils.OutilErreur, config.ConfigError) as e:
+            st.warning(f"Tâche {lien['ticket']} transmise par le manager non chargée : {e}")
+    etat.question_manager = lien.get("question", "")
+    if lien.get("conversation") or lien.get("ticket"):
+        st.rerun()                 # barre latérale à jour (tâche, conversation)
+
+
+def _bandeau_manager() -> str | None:
+    """Résumé du lien du manager et question préremplie ; renvoie la question si l'utilisateur la pose."""
+    etat = st.session_state
+    lien = etat.lien
+    if not lien and not etat.question_manager:
+        return None
+    question = None
+    with st.container(border=True):
+        details = " · ".join(x for x in (lien.get("ticket"), lien.get("projet")) if x)
+        st.markdown("**Ouvert depuis le manager**" + (f" — {details}" if details else ""))
+        if lien.get("contexte"):
+            st.caption(lien["contexte"])
+        if etat.question_manager:
+            st.markdown(f"Question préparée : *{etat.question_manager}*")
+        with st.container(horizontal=True):
+            if etat.question_manager and st.button("Poser cette question", type="primary"):
+                question, etat.question_manager = etat.question_manager, ""
+            if st.button("Masquer", type="tertiary"):
+                etat.lien, etat.question_manager = {}, ""
+                st.rerun()
+    return question
+
+
 def page(page_configuration) -> None:
     etat = _etat()
+    _lien_manager_projet()
     if etat.avis:
         st.toast(etat.avis, icon=":material/history:")
         etat.avis = ""
     profil = _barre_laterale(page_configuration)
+    if profil is not None:
+        _lien_manager_suite(profil)
 
     st.title("Agent Odatio")
     if profil is None:
@@ -465,7 +538,7 @@ def page(page_configuration) -> None:
                f"il n'écrit que les fichiers d'interface que tu lui demandes, dans {config.dossier_fichiers(profil)}.")
     _bloc_documentation(profil)
 
-    question_auto = None
+    question_auto = _bandeau_manager()
     if not etat.messages:
         if etat.ticket:
             st.markdown(f"La tâche **{etat.ticket['cle']}** est transmise à l'agent. Demande-lui de l'expliquer, ou "
