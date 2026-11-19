@@ -39,6 +39,39 @@ def _pilote_manquant(type_base: str) -> str:
     return paquet
 
 
+def _projet_du_manager(p) -> None:
+    """Application du référentiel commun : consultée ici, modifiée dans le manager."""
+    st.info(f"« {p.nom} » vient de la configuration commune du manager (onglet Configuration › Applications, "
+            f"http://localhost:8500) : modifie-la là-bas, puis redémarre cet agent. Les réglages propres à cet agent "
+            f"(fichiers interdits, dossier des fichiers générés, données réelles, actions dans l'application) restent "
+            f"dans profils.toml, dans le projet de même nom.")
+    st.markdown(f"{p.description}  \n**Sources** : " + ", ".join(f"{s.nom} ({s.depot or s.chemin}"
+                                                                   f"{' @ ' + s.branche if s.branche else ''})"
+                                                                   for s in p.sources))
+    details = []
+    if p.base:
+        details.append(f"**Base** : {p.base.type} {p.base.hote}/{p.base.nom} ({p.base.utilisateur})")
+    if p.groundcover_filtre or p.dossiers_logs:
+        details.append(f"**Logs** : {', '.join(p.dossiers_logs + ([p.groundcover_filtre] if p.groundcover_filtre else []))}")
+    if p.logs_ssh:
+        details.append(f"**Logs SSH** : {p.logs_ssh.utilisateur}@{p.logs_ssh.hote} {', '.join(p.logs_ssh.dossiers)}")
+    if p.application:
+        details.append(f"**Application** : {p.application.url}")
+    for d in details:
+        st.markdown(d)
+    if st.button("Tester les accès", key=f"tester-{p.nom}"):
+        with st.spinner("Test des connexions…"):
+            for element, ok, message in outils.tester(config.charger_profil(p.nom)):
+                (st.success if ok else st.error)(f"{element} : {message}")
+
+
+def _bandeau_manager() -> None:
+    if config.gerees():
+        st.info("Lancé par le manager : ces accès viennent de sa configuration commune et se modifient dans le "
+                "manager (onglet Configuration › Accès). Ici, une modification de ces variables n'est pas prise en "
+                "compte : " + ", ".join(config.gerees()) + ".")
+
+
 def _afficher_resultats() -> None:
     for element, ok, message in st.session_state.pop("resultats_test", []):
         (st.success if ok else st.error)(f"{element} : {message}")
@@ -67,6 +100,10 @@ def _onglet_projets() -> None:
     base = p.base or config.Base(type="")
     mot_de_passe_connu = bool(p.base and config.secret(p.base.mot_de_passe_env))
     _afficher_resultats()
+
+    if existant and existant.gere:
+        _projet_du_manager(existant)
+        return
 
     with st.form(f"projet-{choix}"):
         c1, c2 = st.columns([1, 2])
@@ -327,6 +364,7 @@ def _compte(dossier: str) -> str:
 
 
 def _onglet_claude() -> None:
+    _bandeau_manager()
     compte = config.compte_claude()
     mode = st.radio("Compte utilisé", ["compte", "cle"], index=0 if compte["mode"] == "compte" else 1,
                     horizontal=True, format_func=lambda m: {"compte": "Mon abonnement Claude",
@@ -409,6 +447,7 @@ def _dossier_savoye_probable() -> str:
 
 
 def _onglet_acces() -> None:
+    _bandeau_manager()
     with st.expander("Reprendre les réglages d'agent-savoye"):
         st.caption("Copie les accès Jira, Bitbucket, groundcover et le compte Claude déjà renseignés dans agent-savoye.")
         dossier = st.text_input("Dossier d'agent-savoye", value=_dossier_savoye_probable(), placeholder="C:/agent-savoye")

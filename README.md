@@ -167,6 +167,20 @@ Une documentation prend plus d'étapes qu'une question, surtout avec des capture
 | `fichiers_interdits` | Motifs de fichiers que l'agent ne lit jamais, en plus des `.env`, clés et keystores. |
 | `fichiers` | `dossier` des fichiers générés (vide = `.cache/fichiers/<projet>`) et `donnees_reelles` (`false` par défaut). |
 
+## Lancé par le manager (agent-manager-savoye)
+
+Quand agent-manager-savoye lance cet agent, il lui transmet sa **configuration commune** :
+
+- les **accès** (Jira, Bitbucket, groundcover, compte Claude) et les mots de passe qui lui reviennent. Ils
+  l'emportent sur le `.env` de l'agent. Dans les onglets Claude et Accès, ces valeurs sont signalées et se
+  modifient dans le manager ;
+- les **applications** du manager, qui deviennent des projets. Ces projets sont consultables ici (avec un
+  bouton « Tester les accès ») et se modifient dans le manager. Un projet de `profils.toml` de même nom
+  (ex. `Canson-prod` pour `canson-prod`) n'apporte plus que les réglages propres à cet agent : fichiers interdits,
+  dossier et données réelles des fichiers générés, actions dans l'application, format des logs SSH.
+
+Lancé seul (`lancer.bat`), l'agent garde son `.env` et son `profils.toml`, comme avant.
+
 ## Logs d'un serveur par SSH (ex. la production)
 
 Pour un environnement dont les logs ne sont ni sur le poste, ni dans groundcover, l'agent peut les lire sur le
