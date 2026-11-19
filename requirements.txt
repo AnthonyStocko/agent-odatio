@@ -20,5 +20,5 @@ psycopg2-binary>=2.9   # PostgreSQL
 # pymssql              # SQL Server
 # pymysql              # MySQL
 
-# Facultatif : serveur MCP (mcp_server.py)
-# mcp>=2,<3
+# Serveur MCP (mcp_server.py) : utilisé par agent-manager-savoye (mode --manager)
+mcp>=2,<3

@@ -209,8 +209,16 @@ def documentation(captures: list, plafond: int, navigation: str = "", donnees_re
     return texte
 
 
+LECTURE_SEULE = """
+
+Question transmise par le manager (agent-manager-savoye) : réponds seulement à la question, en lisant les sources,
+la base et les logs. Tu n'as ici aucun outil pour générer un fichier d'interface, produire une documentation ou
+naviguer dans l'application : si on te le demande, réponds que cela se fait dans l'agent Odatio lui-même
+(http://localhost:8502), où cette conversation peut être reprise."""
+
+
 def construire(profil: config.Profil, sources: list, logs: list, utilisateur: str, reglages: config.Reglages,
-               ticket: dict | None = None) -> str:
+               ticket: dict | None = None, lecture_seule: bool = False) -> str:
     lignes_sources = "\n".join(f"- {nom} : {chemin}" for nom, chemin in sources)
 
     blocs_logs = []
@@ -251,10 +259,11 @@ def construire(profil: config.Profil, sources: list, logs: list, utilisateur: st
                if avec_bitbucket else "Si la tâche n'est pas encore dans les sources, dis-le clairement.")
     bloc_ticket = (TICKET.format(cle=ticket["cle"], utilisateur=utilisateur or "L'utilisateur", texte=ticket["texte"],
                                  absente=absente) if ticket else "")
-    return MODELE.format(utilisateur=utilisateur or "l'utilisateur", profil=profil.nom, jira=jira, ticket=bloc_ticket,
+    texte = MODELE.format(utilisateur=utilisateur or "l'utilisateur", profil=profil.nom, jira=jira, ticket=bloc_ticket,
                          bitbucket=bitbucket_txt, methode_bitbucket=methode_bitbucket,
                          description=profil.description or "", sources=lignes_sources, logs=logs_txt,
                          base=base_txt, ordre_specifique=ordre, requetes_base=reglages.requetes_base,
                          requetes_generation=reglages.requetes_base_generation,
                          dossier_fichiers=config.dossier_fichiers(profil),
                          donnees_personnelles=DONNEES_REELLES if profil.donnees_reelles else ANONYMISER)
+    return texte + LECTURE_SEULE if lecture_seule else texte

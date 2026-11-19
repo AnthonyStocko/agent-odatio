@@ -86,7 +86,11 @@ committer. Les modèles sont `.env.example` et `profils.example.toml`.
   Outils : `base_tables`, `base_decrire`, `base_requete`, `logs_rechercher`, `jira_ticket`, `bitbucket_*`,
   `generation_demarrer`, `fichier_ecrire`, `documentation_demarrer`, `documentation_enregistrer`, `ecran_ouvrir`,
   `ecran_observer`, `ecran_cliquer`, `ecran_saisir`, `ecran_capturer`.
-- **Outils MCP externes** : `mcp_server.py`, `creer_serveur()`.
+- **Outils MCP externes** : `mcp_server.py`, `creer_serveur()`. Mode `--manager` (`creer_serveur_manager()`) :
+  outils `projets` et `question` pour agent-manager-savoye ; la question passe par `odatio_agent/manager.py`, qui
+  ouvre une `Session(lecture_seule=True)` (sans outils de documentation, de fichiers ni d'écran, bloc
+  `LECTURE_SEULE` ajouté au prompt) et enregistre la conversation dans l'historique du projet. Tout affichage y
+  part sur stderr : stdout est le canal du protocole MCP.
 - **Schéma de la documentation** (contrat de `document.json`) : `odatio_agent/documentation.py`, `SCHEMA` et
   `valider()`.
 - **Évals** : **aucune**. Seuls les garde-fous sont couverts par des tests unitaires (`tests/`), pas le
