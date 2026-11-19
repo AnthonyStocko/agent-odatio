@@ -36,6 +36,15 @@ INTERDITS_PAR_DEFAUT = [".env", ".env.*", "*.pem", "*.key", "*.jks", "*.p12", "*
 _NOM_SECRET = re.compile(r"(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY)$", re.I)
 _SECRETS: dict = {}
 
+# Configuration commune tenue par agent-manager-savoye. Quand le manager lance l'agent, il lui transmet en
+# variables d'environnement les accès et les secrets qui lui reviennent (liste dans SAVOYE_VARIABLES) et le dossier
+# de commun.toml (SAVOYE_CONFIG_DIR). Ces variables l'emportent sur le .env ; les applications de commun.toml
+# deviennent des projets. Lancé seul, l'agent garde son .env et son profils.toml.
+VARIABLE_DOSSIER_COMMUN = "SAVOYE_CONFIG_DIR"
+VARIABLE_GEREES = "SAVOYE_VARIABLES"
+_GEREES: dict = {}       # variables transmises par le manager, relevées une fois (os.environ est vidé ensuite)
+_COMMUN: dict = {}       # {"dossier": Path} si l'agent a été lancé par le manager
+
 
 class ConfigError(Exception):
     """Configuration absente ou invalide, avec un message lisible."""
@@ -82,6 +91,7 @@ class Profil:
     donnees_reelles: bool = False  # garder noms, adresses… dans les fichiers générés (base de test seulement)
     application: Application | None = None
     logs_ssh: LogsSsh | None = None   # logs d'un serveur lus par SSH, en lecture seule
+    gere: bool = False                # application du référentiel commun du manager (non modifiable ici)
 
 
 @dataclass
@@ -100,13 +110,33 @@ class Reglages:
 
 def charger_secrets() -> None:
     """Lit le .env et les secrets déjà présents dans l'environnement, puis les retire de os.environ."""
+    if not _GEREES and not _COMMUN:
+        noms = [n.strip() for n in os.environ.get(VARIABLE_GEREES, "").split(",") if n.strip()]
+        _GEREES.update({n: os.environ[n] for n in noms if os.environ.get(n)})
+        if os.environ.get(VARIABLE_DOSSIER_COMMUN):
+            _COMMUN["dossier"] = Path(os.environ[VARIABLE_DOSSIER_COMMUN])
     valeurs = {k: v for k, v in dotenv_values(FICHIER_SECRETS).items() if v is not None} \
         if FICHIER_SECRETS.exists() else {}
     for nom, valeur in os.environ.items():
         if _NOM_SECRET.search(nom) and nom not in valeurs:
             valeurs[nom] = valeur
+    valeurs.update(_GEREES)                    # le manager l'emporte sur le .env
     _SECRETS.update(valeurs)
     retirer_secrets_environnement()
+
+
+def geree(nom: str) -> bool:
+    """Vrai si la variable est transmise par le manager (elle ne se modifie alors que dans le manager)."""
+    return nom in _GEREES
+
+
+def gerees() -> list:
+    return sorted(_GEREES)
+
+
+def dossier_commun() -> Path | None:
+    """Dossier de la configuration commune du manager, si l'agent a été lancé par lui."""
+    return _COMMUN.get("dossier")
 
 
 def retirer_secrets_environnement() -> None:
@@ -126,6 +156,8 @@ def enregistrer_secrets(valeurs: dict) -> None:
     if not FICHIER_SECRETS.exists():
         FICHIER_SECRETS.touch()
     for nom, valeur in valeurs.items():
+        if geree(nom):
+            continue                           # géré par le manager : la valeur se change dans le manager
         valeur = (valeur or "").strip()
         if valeur:
             set_key(str(FICHIER_SECRETS), nom, valeur, quote_mode="never")
@@ -200,24 +232,97 @@ def reglages() -> Reglages:
                     requetes_base_generation=int(brut.get("requetes_base_generation", 40)))
 
 
+def _identifiant(nom: str) -> str:
+    """Nom comparable entre profils.toml et le référentiel commun : « Canson-prod » → « canson-prod »."""
+    return re.sub(r"[^a-z0-9]+", "-", nom.lower()).strip("-")
+
+
+def _suffixe(nom: str) -> str:
+    return re.sub(r"[^A-Z0-9]+", "_", nom.upper()).strip("_")
+
+
+def applications_communes() -> dict:
+    """Applications du référentiel commun du manager, au format d'un profil de profils.toml ({nom: brut})."""
+    dossier = dossier_commun()
+    fichier = dossier / "commun.toml" if dossier else None
+    if not fichier or not fichier.exists():
+        return {}
+    try:
+        donnees = tomllib.loads(fichier.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise ConfigError(f"Configuration commune du manager illisible ({fichier}) : {e}")
+    resultat = {}
+    for a in donnees.get("applications", []):
+        nom, s = str(a.get("nom", "")).strip(), _suffixe(str(a.get("nom", "")))
+        if not nom:
+            continue
+        brut = {"description": a.get("description", ""),
+                "sources": [{k: v for k, v in x.items() if k in ("nom", "depot", "branche", "chemin") and v}
+                            for x in a.get("sources", [])]}
+        if a.get("base"):
+            brut["base"] = {**a["base"], "mot_de_passe_env": f"DB_PASSWORD_{s}"}
+        logs = {k: v for k, v in a.get("logs", {}).items() if k in ("dossiers", "groundcover_filtre") and v}
+        if a.get("logs", {}).get("ssh", {}).get("hote"):
+            logs["ssh"] = {**a["logs"]["ssh"], "mot_de_passe_env": f"SSH_PASSWORD_{s}"}
+        if logs:
+            brut["logs"] = logs
+        if a.get("url"):
+            brut["application"] = {"url": a["url"], "utilisateur": a.get("utilisateur_application", ""),
+                                   "mot_de_passe_env": f"APP_PASSWORD_{s}"}
+        resultat[nom] = brut
+    return resultat
+
+
+def _fusion(local: dict, commun: dict) -> dict:
+    """Le référentiel commun l'emporte ; les réglages propres à l'agent (fichiers interdits, dossier des fichiers
+    générés, données réelles, actions dans l'application, motif et format des logs SSH…) viennent de profils.toml."""
+    resultat = dict(local)
+    for cle, valeur in commun.items():
+        if isinstance(valeur, dict) and isinstance(local.get(cle), dict):
+            resultat[cle] = _fusion(local[cle], valeur)
+        else:
+            resultat[cle] = valeur
+    return resultat
+
+
+def _profils_bruts() -> dict:
+    """{nom: (brut, gere)} : applications du manager puis projets locaux de profils.toml (un projet local de même
+    nom qu'une application du manager n'apporte que ses réglages propres)."""
+    locaux = _lire_toml().get("profils", {}) if FICHIER_PROFILS.exists() else {}
+    communs = applications_communes()
+    if not communs and not FICHIER_PROFILS.exists():
+        _lire_toml()                           # message « profils.toml introuvable »
+    resultat = {}
+    par_identifiant = {_identifiant(n): n for n in locaux}
+    for nom, brut in communs.items():
+        local = locaux.get(par_identifiant.get(_identifiant(nom), ""), {})
+        resultat[nom] = (_fusion(local, brut), True)
+    pris = {_identifiant(n) for n in communs}
+    for nom, brut in locaux.items():
+        if _identifiant(nom) not in pris:
+            resultat[nom] = (brut, False)
+    return resultat
+
+
 def noms_profils() -> list:
-    if not FICHIER_PROFILS.exists():
+    if not FICHIER_PROFILS.exists() and not applications_communes():
         return []
-    return list(_lire_toml().get("profils", {}))
+    return list(_profils_bruts())
 
 
 def charger_profil(nom: str, interdits_par_defaut: bool = True) -> Profil:
-    profils = _lire_toml().get("profils", {})
+    profils = _profils_bruts()
     if nom not in profils:
         raise ConfigError(f"Profil « {nom} » inconnu. Profils disponibles : {', '.join(profils) or 'aucun'}.")
-    return _profil(nom, profils[nom], interdits_par_defaut)
+    brut, gere = profils[nom]
+    return _profil(nom, brut, interdits_par_defaut, gere)
 
 
 def tous_les_profils() -> list:
     """Profils tels qu'écrits (sans les fichiers interdits par défaut), pour l'écran de configuration."""
-    if not FICHIER_PROFILS.exists():
+    if not FICHIER_PROFILS.exists() and not applications_communes():
         return []
-    return [_profil(nom, brut, False) for nom, brut in _lire_toml().get("profils", {}).items()]
+    return [_profil(nom, brut, False, gere) for nom, (brut, gere) in _profils_bruts().items()]
 
 
 _PAGE_BITBUCKET = re.compile(r"^(https?://[^?#]+?)/projects/([^/?#]+)/repos/([^/?#]+)[^?#]*(?:\?([^#]*))?")
@@ -245,7 +350,7 @@ def source_depot(nom: str, depot: str, branche: str) -> Source:
     return Source(nom=nom or defaut, depot=depot, branche=branche or branche_url)
 
 
-def _profil(nom: str, brut: dict, interdits_par_defaut: bool) -> Profil:
+def _profil(nom: str, brut: dict, interdits_par_defaut: bool, gere: bool = False) -> Profil:
 
     sources = []
     for i, s in enumerate(brut.get("sources", []), start=1):
@@ -293,7 +398,7 @@ def _profil(nom: str, brut: dict, interdits_par_defaut: bool) -> Profil:
             raise ConfigError(f"Profil « {nom} », logs SSH : " + " ; ".join(problemes) + ".")
 
     return Profil(nom=nom, description=str(brut.get("description", "")).strip(), sources=sources,
-                  application=application, logs_ssh=logs_ssh,
+                  application=application, logs_ssh=logs_ssh, gere=gere,
                   dossiers_logs=[str(d) for d in logs.get("dossiers", [])],
                   groundcover_filtre=str(logs.get("groundcover_filtre", "")).strip(), base=base,
                   fichiers_interdits=(INTERDITS_PAR_DEFAUT if interdits_par_defaut else [])
@@ -341,6 +446,11 @@ def enregistrer(reglages_agent: Reglages, profils: list) -> None:
     ne sont pas conservés : l'écran de configuration devient la référence."""
     import tomli_w
 
+    geres = {_identifiant(p.nom) for p in profils if p.gere} | {_identifiant(n) for n in applications_communes()}
+    profils = [p for p in profils if not p.gere]
+    for p in profils:
+        if _identifiant(p.nom) in geres:
+            raise ConfigError(f"« {p.nom} » est une application du manager : modifie-la dans le manager.")
     for p in profils:
         if not NOM_PROFIL.match(p.nom):
             raise ConfigError(f"Nom de profil invalide : « {p.nom} » (lettres, chiffres, - et _ ; sans espace).")
@@ -382,6 +492,10 @@ def enregistrer(reglages_agent: Reglages, profils: list) -> None:
         donnees["profils"][p.nom] = brut
 
     if FICHIER_PROFILS.exists():
+        # Entrées locales des applications du manager : gardées telles quelles (réglages propres à l'agent).
+        for nom, brut in _lire_toml().get("profils", {}).items():
+            if _identifiant(nom) in geres and nom not in donnees["profils"]:
+                donnees["profils"][nom] = brut
         shutil.copyfile(FICHIER_PROFILS, FICHIER_PROFILS.with_suffix(".toml.bak"))
     with open(FICHIER_PROFILS, "wb") as f:
         tomli_w.dump(donnees, f)

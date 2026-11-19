@@ -65,6 +65,17 @@ venv\Scripts\python.exe agent.py --profil <p> --test  # vérifie les accès d'un
 Fichiers personnels non versionnés : `.env`, `profils.toml`, `profils.toml.bak`, `.cache/`. Ne jamais les
 committer. Les modèles sont `.env.example` et `profils.example.toml`.
 
+### Configuration commune (agent-manager-savoye)
+
+- Lancé par le manager, l'agent reçoit `SAVOYE_VARIABLES` (liste des variables transmises), ces variables, et
+  `SAVOYE_CONFIG_DIR` (dossier de `commun.toml`). `config.charger_secrets` les relève une fois (`_GEREES`) :
+  elles l'emportent sur le `.env`, et `enregistrer_secrets` ne les écrit pas.
+- `config._profils_bruts` : les applications de `commun.toml` deviennent des profils (`Profil.gere`), avec les
+  noms de secrets `DB_PASSWORD_<NOM>`, `APP_PASSWORD_<NOM>`, `SSH_PASSWORD_<NOM>`. Un profil local de même
+  identifiant (casse et séparateurs ignorés) n'apporte que ses réglages propres (`_fusion`). `enregistrer` ne
+  réécrit pas les profils gérés et garde leurs entrées locales telles quelles.
+- Lancé seul, rien ne change.
+
 ## 3. Prompts, outils et évals
 
 - **Prompt système** : `odatio_agent/consignes.py`, `MODELE`, assemblé par `construire()`. Blocs conditionnels :
