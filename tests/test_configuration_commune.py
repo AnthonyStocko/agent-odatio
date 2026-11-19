@@ -101,6 +101,21 @@ class TestVariablesDuManager(AvecManager):
         config.charger_secrets()                                                # nouvelle lecture : toujours le manager
         self.assertEqual(config.secret("JIRA_API_TOKEN"), "du-manager")
 
+    def test_jetons_releves_avant_leur_retrait_de_l_environnement(self):
+        """outils.py retire les secrets de os.environ dès son import, avant le premier charger_secrets()."""
+        config.FICHIER_SECRETS.write_text("", encoding="utf-8")
+        env = {"JIRA_API_TOKEN": "jeton", "BITBUCKET_HTTP_TOKEN": "lecture", "JIRA_DOMAIN": "societe.atlassian.net",
+               "SAVOYE_VARIABLES": "BITBUCKET_HTTP_TOKEN,JIRA_API_TOKEN,JIRA_DOMAIN",
+               "SAVOYE_CONFIG_DIR": str(self.commun)}
+        with mock.patch.dict(os.environ, env):
+            config.relever_variables_du_manager()          # import de config.py
+            config.retirer_secrets_environnement()         # import d'outils.py
+            self.assertNotIn("JIRA_API_TOKEN", os.environ)
+            config.charger_secrets()                       # IHM
+        self.assertEqual((config.secret("JIRA_API_TOKEN"), config.secret("BITBUCKET_HTTP_TOKEN")),
+                         ("jeton", "lecture"))
+        self.assertEqual(config.gerees(), ["BITBUCKET_HTTP_TOKEN", "JIRA_API_TOKEN", "JIRA_DOMAIN"])
+
     def test_variable_geree_non_ecrite_dans_le_env(self):
         self.lancer({"JIRA_API_TOKEN": "du-manager"}, dotenv="JIRA_API_TOKEN=du-env\n")
         config.enregistrer_secrets({"JIRA_API_TOKEN": "saisi-ici", "JIRA_EMAIL": "moi@exemple.com"})

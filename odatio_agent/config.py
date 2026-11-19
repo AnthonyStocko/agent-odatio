@@ -108,13 +108,22 @@ class Reglages:
 # Secrets
 # ---------------------------------------------------------------------------
 
+def relever_variables_du_manager() -> None:
+    """Relève les variables transmises par le manager, AVANT que les secrets ne soient retirés de os.environ.
+
+    Appelé à l'import de ce module : outils.py retire les secrets de l'environnement dès son import (après le
+    load_dotenv de db_tools et jira_tools), avant le premier charger_secrets() de l'IHM."""
+    if _GEREES or _COMMUN:
+        return
+    noms = [n.strip() for n in os.environ.get(VARIABLE_GEREES, "").split(",") if n.strip()]
+    _GEREES.update({n: os.environ[n] for n in noms if os.environ.get(n)})
+    if os.environ.get(VARIABLE_DOSSIER_COMMUN):
+        _COMMUN["dossier"] = Path(os.environ[VARIABLE_DOSSIER_COMMUN])
+
+
 def charger_secrets() -> None:
     """Lit le .env et les secrets déjà présents dans l'environnement, puis les retire de os.environ."""
-    if not _GEREES and not _COMMUN:
-        noms = [n.strip() for n in os.environ.get(VARIABLE_GEREES, "").split(",") if n.strip()]
-        _GEREES.update({n: os.environ[n] for n in noms if os.environ.get(n)})
-        if os.environ.get(VARIABLE_DOSSIER_COMMUN):
-            _COMMUN["dossier"] = Path(os.environ[VARIABLE_DOSSIER_COMMUN])
+    relever_variables_du_manager()
     valeurs = {k: v for k, v in dotenv_values(FICHIER_SECRETS).items() if v is not None} \
         if FICHIER_SECRETS.exists() else {}
     for nom, valeur in os.environ.items():
@@ -499,3 +508,6 @@ def enregistrer(reglages_agent: Reglages, profils: list) -> None:
         shutil.copyfile(FICHIER_PROFILS, FICHIER_PROFILS.with_suffix(".toml.bak"))
     with open(FICHIER_PROFILS, "wb") as f:
         tomli_w.dump(donnees, f)
+
+
+relever_variables_du_manager()   # avant tout retrait des secrets de os.environ (voir outils.py)
