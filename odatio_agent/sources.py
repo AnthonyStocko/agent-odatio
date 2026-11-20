@@ -2,13 +2,18 @@
 Sources d'un profil : dossiers locaux utilisés tels quels, dépôts Git clonés (ou mis à jour) dans
 .cache/sources/<profil>/<nom>. L'agent ne lit que ces dossiers, jamais il n'y écrit.
 
+Une source peut aussi désigner un projet Bitbucket entier (adresse de la page du projet, …/projects/PROJ) : tous
+ses dépôts sont alors clonés dans .cache/sources/<profil>/<nom>/<depot>, et un dépôt ajouté au projet est
+récupéré à la mise à jour suivante. La branche de la source s'applique aux dépôts qui l'ont ; les autres
+suivent leur branche par défaut.
+
 Authentification Git : jeton HTTP Bitbucket (BITBUCKET_HTTP_TOKEN dans le .env), passé en en-tête à chaque
 commande et jamais écrit dans l'URL ni dans la configuration du clone.
 """
 import subprocess
 from pathlib import Path
 
-from . import config
+from . import bitbucket, config
 from tools.secret_tools import mask_secrets
 
 
@@ -32,6 +37,54 @@ def _git(args: list, cwd: Path | None = None) -> str:
     return resultat.stdout
 
 
+def _depot(cible: Path, url: str, branche: str, mettre_a_jour: bool, journal, libelle: str) -> None:
+    """Clone le dépôt dans cible, ou le met à jour (dernier commit de la branche, sans historique)."""
+    if (cible / ".git").is_dir():
+        if mettre_a_jour:
+            journal(f"Mise à jour de « {libelle} »…")
+            branche = branche or _git(["rev-parse", "--abbrev-ref", "HEAD"], cible).strip()
+            _git(["fetch", "--depth", "1", "origin", branche], cible)
+            _git(["reset", "--hard", "FETCH_HEAD"], cible)
+    else:
+        journal(f"Clonage de « {libelle} » (première fois, peut prendre quelques minutes)…")
+        cible.parent.mkdir(parents=True, exist_ok=True)
+        _git(["clone", "--depth", "1"] + (["--branch", branche] if branche else []) + [url, str(cible)])
+
+
+def _projet(profil: config.Profil, source: config.Source, projet: str, mettre_a_jour: bool, journal) -> Path:
+    """Clone ou met à jour tous les dépôts du projet Bitbucket dans le dossier de la source."""
+    dossier = config.CACHE / "sources" / profil.nom / source.nom
+    deja = dossier.is_dir() and any((d / ".git").is_dir() for d in dossier.iterdir())
+    if deja and not mettre_a_jour:
+        return dossier.resolve()
+    try:
+        depots = bitbucket.depots_du_projet(profil, projet)
+    except bitbucket.BitbucketErreur as e:
+        raise SourceError(f"Source « {source.nom} » (projet Bitbucket {projet}) : {e}")
+    if not depots:
+        raise SourceError(f"Source « {source.nom} » : le projet Bitbucket {projet} n'a aucun dépôt lisible.")
+    faits, echecs = 0, []
+    for nom, url in depots:
+        libelle = f"{source.nom}/{nom}"
+        try:
+            tetes = _git(["ls-remote", "--heads", url])
+            if not tetes.strip():
+                journal(f"« {libelle} » : dépôt vide, ignoré.")
+                continue
+            branche = source.branche if f"refs/heads/{source.branche}" in tetes.split() else ""
+            if source.branche and not branche:
+                journal(f"« {libelle} » : pas de branche « {source.branche} », branche par défaut.")
+            _depot(dossier / nom, url, branche, mettre_a_jour, journal, libelle)
+            faits += 1
+        except SourceError as e:
+            echecs.append(f"{nom} : {e}")
+            journal(f"« {libelle} » non récupéré : {e}")
+    if not faits:
+        raise SourceError(f"Source « {source.nom} » : aucun dépôt du projet {projet} n'a pu être récupéré ("
+                          + "; ".join(echecs[:3]) + ").")
+    return dossier.resolve()
+
+
 def preparer(profil: config.Profil, mettre_a_jour: bool = True, journal=print) -> list:
     """Renvoie [(nom, chemin absolu)] des sources du profil, en clonant ou mettant à jour les dépôts."""
     prets = []
@@ -43,18 +96,13 @@ def preparer(profil: config.Profil, mettre_a_jour: bool = True, journal=print) -
             prets.append((source.nom, chemin))
             continue
 
+        projet = bitbucket.projet_depuis_url(source.depot)
+        if projet:
+            prets.append((source.nom, _projet(profil, source, projet, mettre_a_jour, journal)))
+            continue
+
         cible = config.CACHE / "sources" / profil.nom / source.nom
-        if (cible / ".git").is_dir():
-            if mettre_a_jour:
-                journal(f"Mise à jour de « {source.nom} »…")
-                branche = source.branche or _git(["rev-parse", "--abbrev-ref", "HEAD"], cible).strip()
-                _git(["fetch", "--depth", "1", "origin", branche], cible)
-                _git(["reset", "--hard", "FETCH_HEAD"], cible)
-        else:
-            journal(f"Clonage de « {source.nom} » (première fois, peut prendre quelques minutes)…")
-            cible.parent.mkdir(parents=True, exist_ok=True)
-            args = ["clone", "--depth", "1"] + (["--branch", source.branche] if source.branche else [])
-            _git(args + [source.depot, str(cible)])
+        _depot(cible, source.depot, source.branche, mettre_a_jour, journal, source.nom)
         prets.append((source.nom, cible.resolve()))
     return prets
 

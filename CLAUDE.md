@@ -57,7 +57,7 @@ L'agent n'intègre jamais un fichier : l'intégration dans ODATiO reste un geste
 Commandes, depuis la racine du dépôt :
 
 ```powershell
-venv\Scripts\python.exe -m unittest                  # tests (133 tests OK au 2026-11-20)
+venv\Scripts\python.exe -m unittest                  # tests (145 tests OK au 2026-11-20)
 venv\Scripts\python.exe agent.py --profil <p> --test  # vérifie les accès d'un profil
 ```
 

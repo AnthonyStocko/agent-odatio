@@ -122,7 +122,8 @@ def _onglet_projets() -> None:
                 "nom": st.column_config.TextColumn("Nom", help="Ex. standard, canson"),
                 "chemin": st.column_config.TextColumn("Dossier local", help="Ex. C:/development/branch_dev", width="large"),
                 "depot": st.column_config.TextColumn("Dépôt Git", help="Adresse de clonage (…/scm/…/….git) ou adresse de la page du dépôt dans Bitbucket "
-                                                     "(…/projects/…/repos/…) : elle est convertie.", width="large"),
+                                                     "(…/projects/…/repos/…) : elle est convertie. L'adresse d'un projet "
+                                                     "(…/projects/PROJ) donne tous ses dépôts.", width="large"),
                 "branche": st.column_config.TextColumn("Branche", help="Pour un dépôt Git ; vide = branche par défaut"),
             })
 

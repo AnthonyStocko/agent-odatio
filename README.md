@@ -199,7 +199,7 @@ l'état (JSON). Boutons : Télécharger (.md), Word, Copier (Markdown). En ligne
 
 | Section | Contenu |
 |---|---|
-| `sources` | Une ou plusieurs : `chemin` (dossier local ou partage) ou `depot` + `branche` (cloné avec `BITBUCKET_HTTP_TOKEN` ; l'adresse de la page du dépôt dans Bitbucket, `…/projects/…/repos/…`, est convertie en adresse de clonage, avec la branche affichée si elle y figure). Avec le Standard et le spécifique client, l'agent distingue ce qui relève de chacun. |
+| `sources` | Une ou plusieurs : `chemin` (dossier local ou partage) ou `depot` + `branche` (cloné avec `BITBUCKET_HTTP_TOKEN` ; l'adresse de la page du dépôt dans Bitbucket, `…/projects/…/repos/…`, est convertie en adresse de clonage, avec la branche affichée si elle y figure). L'adresse d'un **projet** Bitbucket, `…/projects/PROJ`, donne tous ses dépôts : chacun est cloné dans un sous-dossier de la source, et un dépôt ajouté au projet est récupéré à la mise à jour suivante ; la `branche` s'applique aux dépôts qui l'ont, les autres suivent leur branche par défaut. Avec le Standard et le spécifique client, l'agent distingue ce qui relève de chacun. |
 | `logs` | `dossiers` (fichiers lus avec Grep/Read), `groundcover_filtre` (filtre gcQL imposé à toute recherche) et/ou `ssh` (logs d'un serveur lus par SSH, voir plus bas). |
 | `base` | Connexion en lecture seule ; le mot de passe est dans le `.env`, sous le nom donné par `mot_de_passe_env`. |
 | `fichiers_interdits` | Motifs de fichiers que l'agent ne lit jamais, en plus des `.env`, clés et keystores. |
