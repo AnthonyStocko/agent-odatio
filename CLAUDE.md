@@ -23,6 +23,7 @@ tester), et, en aval, les **consultants fonctionnels** destinataires des documen
 |---|---|---|
 | Fichier d'interface de test (`fichier_ecrire`) | Demande explicite, après `generation_demarrer` | Dossier des fichiers générés du profil |
 | Documentation (`documentation_enregistrer`) puis vidéo et document Word | Demande de documentation, après `documentation_demarrer` | `.cache/documentation/<sujet>-<date>/` |
+| Synthèse client : inventaire, parties validées (`synthese_enregistrer`), rapport Markdown et Word | Bouton « Générer » de la page Synthèse client, ou `--synthese` | `.cache/synthese/<projet>-<date>/` |
 | Pièce jointe Jira (`outils.jira_joindre`) | Clic de l'utilisateur dans l'IHM uniquement, jamais l'agent | Ticket Jira |
 
 L'agent n'intègre jamais un fichier : l'intégration dans ODATiO reste un geste manuel.
@@ -48,14 +49,15 @@ L'agent n'intègre jamais un fichier : l'intégration dans ODATiO reste un geste
 | `odatio_agent/config.py` | Profils (`profils.toml`), secrets (`.env`), réglages |
 | `odatio_agent/bitbucket.py` | Client Bitbucket Server en lecture |
 | `odatio_agent/historique.py` | Conversations enregistrées et reprise |
-| `odatio_agent/ihm_*.py` | Onglets Assistant et Configuration |
+| `odatio_agent/synthese.py` | Synthèse client : inventaire déterministe, lots, validation, assemblage du rapport |
+| `odatio_agent/ihm_*.py` | Pages Assistant, Synthèse client et Configuration |
 | `tools/` | Modules **copiés sans modification** depuis agent-savoye (voir Questions ouvertes) |
 | `tests/` | Tests `unittest` (`tests/outillage.py` : utilitaires communs) |
 
 Commandes, depuis la racine du dépôt :
 
 ```powershell
-venv\Scripts\python.exe -m unittest                  # tests (68 tests OK au 2026-11-12)
+venv\Scripts\python.exe -m unittest                  # tests (133 tests OK au 2026-11-20)
 venv\Scripts\python.exe agent.py --profil <p> --test  # vérifie les accès d'un profil
 ```
 
@@ -85,11 +87,32 @@ committer. Les modèles sont `.env.example` et `profils.example.toml`.
 - **Prompt système** : `odatio_agent/consignes.py`, `MODELE`, assemblé par `construire()`. Blocs conditionnels :
   `TICKET`, `BITBUCKET`, `METHODE_BITBUCKET`, `ANONYMISER` / `DONNEES_REELLES`.
 - **Marches à suivre renvoyées par les outils** (complètent le prompt en cours de session) : `DOCUMENTATION`,
-  `NAVIGATION`, `EXISTANT` dans `consignes.py`, via `consignes.documentation()`.
+  `NAVIGATION`, `EXISTANT` dans `consignes.py`, via `consignes.documentation()` ; `SYNTHESE_LOT`,
+  `SYNTHESE_FINALE` et `SYNTHESE_COMMUN`, via `consignes.synthese()`.
 - **Définitions des outils maison** (décorateur `@tool`) : `odatio_agent/session.py`, `_outils_maison()`.
   Outils : `base_tables`, `base_decrire`, `base_requete`, `logs_rechercher`, `jira_ticket`, `bitbucket_*`,
   `generation_demarrer`, `fichier_ecrire`, `documentation_demarrer`, `documentation_enregistrer`, `ecran_ouvrir`,
-  `ecran_observer`, `ecran_cliquer`, `ecran_saisir`, `ecran_capturer`.
+  `ecran_observer`, `ecran_cliquer`, `ecran_saisir`, `ecran_capturer`, et en session de synthèse seulement
+  `synthese_demarrer`, `synthese_enregistrer`.
+- **Synthèse client** (`odatio_agent/synthese.py`, page `ihm_synthese.py`, `agent.py --synthese`) :
+  1. `inventorier` (0 token) : fichiers des sources spécifiques absents du Standard ou différents de lui (même
+     chemin au contenu identique, fins de ligne normalisées : ignoré) ; surcharge = même chemin, même nom de
+     classe Java sous `src/main`, ou `customized.*` avec `original.*` (Studio) ; regroupés par élément
+     (catégorie : traitement, processus Studio, interface / flux, édition / étiquette, écran, paramétrage,
+     script SQL, libellés ; unité : processus, plugin, objet métier du package, module). Tickets cités dans le
+     code ; version du Standard lue dans les `pom.xml` du spécifique (groupIds du Standard lus dans ses `pom.xml`,
+     propriétés résolues ; à défaut, version du pom Standard, marquée « déduit »). Source Standard : choisie dans
+     la page, sinon celle dont le nom contient « standard ».
+  2. Une session NEUVE par lot (`Reglages.synthese_lot`), puis une session finale : `Session(synthese={...})`,
+     outils de lecture + `synthese_demarrer` / `synthese_enregistrer` seulement, plafonds
+     `requetes_base_synthese` et `synthese_max_tours`, bloc `SYNTHESE` ajouté au prompt système ; marches à
+     suivre `SYNTHESE_LOT` et `SYNTHESE_FINALE` dans `consignes.py`.
+  3. `etat.json` écrit après chaque lot (écriture atomique). Arrêt (clic Streamlit, onglet fermé, plantage) :
+     seul le lot en cours est perdu ; `executer` reprend au premier lot non fait. Un lot en échec n'est pas
+     relancé dans la même exécution ; la partie finale n'est lancée que si au moins un lot a abouti, et refaite
+     si un lot aboutit après elle. Rapport « partiel » si des lots restent à refaire.
+  4. `assembler` / `valider_rapport` : six sections, colonnes Source et Statut renseignées dans chaque tableau,
+     motifs sensibles refusés ; `rapport.md` et `rapport.docx`.
 - **Outils MCP externes** : `mcp_server.py`, `creer_serveur()`. Mode `--manager` (`creer_serveur_manager()`) :
   outils `projets` et `question` pour agent-manager-savoye ; la question passe par `odatio_agent/manager.py`, qui
   ouvre une `Session(lecture_seule=True)` (sans outils de documentation, de fichiers ni d'écran, bloc
@@ -175,6 +198,8 @@ avant et après la modification dans la PR.
 | Logs groundcover : fenêtre de 30 minutes au plus, 200 lignes au plus, filtre du profil imposé | `tools/groundcover_tools.py`, `outils.logs_rechercher` |
 | Fichier d'interface : nom `[A-Za-z0-9._-]`, sans chemin ni `..`, extensions `.xml .csv .txt .json .dat .edi`, 5 Mo au plus, encodages utf-8, iso-8859-1 et cp1252, jamais d'écrasement, secrets masqués | `fichiers.py` |
 | Documentation refusée si elle contient un secret, un e-mail ou un téléphone ; 3 à 16 scènes ; narration de 900 caractères au plus ; au moins un cas de test | `documentation.py`, `valider()` |
+| Synthèse : chaque élément du lot expliqué (objectif, composants, sources, statut) ou déclaré non expliqué avec la raison ; aucun élément inventé ; constats avec sévérité et preuves ; secrets, e-mails, téléphones, chaînes de connexion et clés privées refusés ; rapport final : six sections, Source et Statut (`vérifié` / `déduit`) sur chaque ligne de tableau | `synthese.py`, `valider_lot()`, `valider_finale()`, `valider_rapport()` |
+| Session de synthèse : aucun outil de fichier d'interface, de documentation ni de navigation ; écriture limitée au dossier de la synthèse | `session.py`, `_outils_maison()`, `_outils_synthese()` |
 | Navigation : seule l'application du projet (ou une adresse locale) peut être ouverte ; clics d'écriture refusés d'après le libellé, sauf en mode actions ; mot de passe saisi par l'outil ; 20 captures au plus | `ecran.py`, `_ECRITURE`, `_ECRITURE_LIEN` |
 | Bitbucket en lecture seule, projets autorisés, fichiers interdits jamais montrés, réponses bornées | `bitbucket.py` |
 | Secrets retirés de l'environnement, posés le temps d'un appel et masqués dans les résultats | `config.py`, `outils._environnement`, `tools/secret_tools.py` |

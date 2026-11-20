@@ -157,6 +157,44 @@ Une documentation prend plus d'étapes qu'une question, surtout avec des capture
 
 **Plus tard : démonstration filmée.** La vidéo est aujourd'hui une suite de diapositives et de captures commentées, pas un film de l'écran en mouvement. Les cas de test sont enregistrés de façon structurée dans `document.json` (écran, action, résultat attendu) pour qu'ils puissent être rejoués et filmés dans l'application, en mode « actions », sur un environnement de test.
 
+### Synthèse client (démarrage, passage au support édition)
+
+Page **Synthèse client** : choisis le projet (le même que dans l'assistant) et la source Standard (les autres
+sources sont le spécifique du client), puis « Générer une nouvelle synthèse ». Le rapport couvre :
+
+1. **Identité et contexte** : sources et commits lus, version du Standard (lue dans les `pom.xml` du
+   spécifique), architecture, modules utilisés ;
+2. **Développements spécifiques** : un tableau par catégorie (traitements et règles métier, processus Studio,
+   interfaces et flux, éditions et étiquettes, écrans, paramétrage, scripts SQL), avec l'objectif fonctionnel, les
+   composants, surcharge ou ajout, le ticket d'origine ;
+3. **Configuration en place** : paramètres clés actifs, avec la table ou le fichier ;
+4. **Audit et points de vigilance** : seulement des constats prouvés, avec leur sévérité ;
+5. **Points à vérifier / informations manquantes**, avec l'endroit où chercher ;
+6. **Couverture** : éléments expliqués sur le total inventorié, sources et commits, coût et durée.
+
+Chaque ligne cite sa source et dit si elle est **vérifiée** (lue) ou **déduite**. Rien n'est inventé : ce que
+l'agent ne trouve pas va dans les points à vérifier.
+
+Comment c'est fait : l'agent inventorie d'abord, **sans appel au modèle**, tous les fichiers du spécifique
+absents du Standard ou différents de lui, regroupés en éléments (c'est ce qui garantit l'exhaustivité). Puis il
+les explique par lots (une session par lot), et termine par une session pour le contexte, la configuration (lue
+en base) et l'audit. Le rapport est contrôlé avant d'être écrit : six sections, une source et un statut sur
+chaque ligne, aucun secret, e-mail, téléphone ni chaîne de connexion. Les noms de personnes sont écartés par la
+consigne de rédaction, pas par un filtre : **relis le rapport avant de l'envoyer au support**.
+
+**Arrêter, reprendre.** L'avancement est enregistré après chaque lot. « Arrêter » (ou fermer l'onglet) ne perd
+que le lot en cours ; « Reprendre » repart du lot suivant. Un lot qui échoue (plafond atteint…) est signalé et
+relancé par « Reprendre » ; le rapport est alors marqué « partiel ».
+
+**Réglages** (Configuration, Claude) : éléments par lot (12), étapes (80) et accès base (30) par session de
+synthèse. Le coût maximal par question s'applique à chaque session : avec un plafond bas, des lots peuvent
+s'arrêter avant la fin. Une synthèse coûte plusieurs sessions : regarde la ligne Couverture pour le coût réel.
+
+Résultat dans `.cache/synthese/<projet>-<date>/` : `rapport.md`, `rapport.docx`, et l'inventaire, les lots et
+l'état (JSON). Boutons : Télécharger (.md), Word, Copier (Markdown). En ligne de commande :
+`python agent.py --profil <p> --synthese [--standard <source>]`, puis
+`--reprendre-synthese .cache/synthese/<dossier>` si elle a été interrompue.
+
 ## Un projet (profils.toml)
 
 | Section | Contenu |

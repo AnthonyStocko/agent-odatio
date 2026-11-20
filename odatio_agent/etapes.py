@@ -29,6 +29,12 @@ def resumer(nom: str, entree: dict, racines: list) -> str:
         return f"Prépare une documentation : {entree.get('sujet', '')}".rstrip(" :")
     if nom_court == "documentation_enregistrer":
         return f"Enregistre la documentation ({len(entree.get('scenes') or [])} scènes)"
+    if nom_court == "synthese_demarrer":
+        return "Synthèse : lit la marche à suivre et les éléments de l'étape"
+    if nom_court == "synthese_enregistrer":
+        expliques = len(entree.get("elements") or [])
+        return (f"Synthèse : enregistre le lot ({expliques} élément(s) expliqué(s))" if "elements" in entree
+                else "Synthèse : enregistre la partie finale")
     if nom_court == "ecran_ouvrir":
         return f"Application : ouvre {entree.get('adresse') or 'la page d’accueil'}"
     if nom_court == "ecran_observer":

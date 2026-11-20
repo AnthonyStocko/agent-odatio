@@ -14,6 +14,10 @@ Agent fonctionnel Odatio — conversation en ligne de commande.
   python agent.py --profil local --reprendre <id>         reprend une conversation là où elle s'était arrêtée
   python agent.py --profil local --poursuivre .cache/documentation/<dossier> [--question "ajoute un cas…"]
                                                   poursuit une documentation (avec sa conversation si connue)
+  python agent.py --profil recette-x --synthese [--standard standard]
+                                                  synthèse client (démarrage, support édition)
+  python agent.py --profil recette-x --reprendre-synthese .cache/synthese/<dossier>
+                                                  reprend une synthèse au premier lot non terminé
 En conversation aussi, « fais-moi une vidéo de cette fonctionnalité » produit la documentation.
 
 En conversation : /nouveau repart d'une conversation vide, /quitter (ou Ctrl+D) termine.
@@ -26,7 +30,7 @@ import sys
 
 from pathlib import Path
 
-from odatio_agent import config, documentation, historique, outils, sources, video
+from odatio_agent import config, documentation, historique, outils, sources, synthese, video
 from odatio_agent.etapes import resumer
 from odatio_agent.session import Session
 
@@ -198,6 +202,36 @@ def tester(profil: config.Profil, maj: bool) -> int:
     return 0 if ok_global else 1
 
 
+async def synthetiser(profil: config.Profil, maj: bool, standard: str = "", dossier: str = "") -> int:
+    """Synthèse client : nouvelle (inventaire puis lots) ou reprise d'un dossier existant."""
+    prets = sources.preparer(profil, mettre_a_jour=maj)
+    logs = sources.dossiers_logs(profil)
+    if dossier:
+        cible = Path(dossier)
+        synthese.etat(cible)
+    else:
+        print(f"{GRIS}Inventaire des éléments spécifiques (sans appel au modèle)…{FIN}")
+        inventaire = synthese.inventorier(profil.nom, [(n, str(c)) for n, c in prets], standard)
+        if not inventaire["elements"]:
+            print("Aucun élément spécifique : les sources spécifiques sont identiques au Standard.")
+            return 0
+        cible = synthese.creer(profil.nom, inventaire, config.reglages().synthese_lot)
+        print(f"{len(inventaire['elements'])} élément(s), {len(synthese.etat(cible)['lots'])} lot(s) : {cible}")
+
+    def creer(mode, numero):
+        return Session(profil, prets, logs, config.reglages(), getpass.getuser(),
+                       synthese={"mode": mode, "numero": numero, "dossier": str(cible)})
+
+    e = await synthese.executer(cible, creer, lambda texte: print(f"{GRIS}  · {texte}{FIN}", flush=True))
+    cout = f"{e.get('cout_usd') or 0:.2f} $"
+    if e.get("fichiers"):
+        print(f"{VERT}Synthèse {'partielle ' if e.get('partiel') else ''}prête{FIN} ({cout}) : "
+              f"{e['fichiers'].get('markdown')} — à relire avant envoi au support.")
+        return 0
+    print(f"{ROUGE}Synthèse incomplète{FIN} ({cout}) : relance avec --reprendre-synthese {cible}")
+    return 1
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -220,6 +254,9 @@ def main() -> int:
     parser.add_argument("--reprendre", default="", metavar="ID", help="reprend une conversation enregistrée")
     parser.add_argument("--poursuivre", default="", metavar="DOSSIER",
                         help="poursuit une documentation déjà produite (avec --question pour la demande)")
+    parser.add_argument("--synthese", action="store_true", help="synthèse client (démarrage, support édition)")
+    parser.add_argument("--standard", default="", help="nom de la source Standard (défaut : celle nommée *standard*)")
+    parser.add_argument("--reprendre-synthese", default="", metavar="DOSSIER", help="reprend une synthèse")
     parser.add_argument("--rendre", default="", metavar="DOSSIER",
                         help="refait document et vidéo d'un dossier de documentation (après correction de document.json)")
     args = parser.parse_args()
@@ -236,6 +273,8 @@ def main() -> int:
         profil = config.charger_profil(args.profil)
         if args.test:
             return tester(profil, not args.sans_maj)
+        if args.synthese or args.reprendre_synthese:
+            return asyncio.run(synthetiser(profil, not args.sans_maj, args.standard, args.reprendre_synthese))
         if args.conversations:
             for c in historique.lister(profil.nom):
                 doc = " [documentation]" if c["documentation"] else ""
@@ -263,7 +302,7 @@ def main() -> int:
                                           not args.sans_maj, args.captures, args.sans_video))
         return asyncio.run(converser(profil, config.reglages(), args.question, not args.sans_maj, ticket,
                                      conversation, dossier))
-    except (config.ConfigError, sources.SourceError, outils.OutilErreur) as e:
+    except (config.ConfigError, sources.SourceError, outils.OutilErreur, synthese.SyntheseErreur) as e:
         print(f"{ROUGE}{e}{FIN}")
         return 2
 
