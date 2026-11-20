@@ -130,6 +130,29 @@ def _borner(texte: str, maximum: int = CARACTERES_MAX) -> str:
 # Dépôts et références
 # ---------------------------------------------------------------------------
 
+_PROJET_URL = re.compile(r"^https?://[^?#]+?/projects/([^/?#]+)/?(?:[?#].*)?$")
+
+
+def projet_depuis_url(url: str) -> str:
+    """PROJET d'une adresse de la page d'un projet Bitbucket (…/projects/PROJ, sans /repos/…), sinon ""."""
+    m = _PROJET_URL.match((url or "").strip())
+    return m.group(1).upper() if m else ""
+
+
+def depots_du_projet(profil, projet: str) -> list:
+    """[(depot, adresse de clonage HTTP)] des dépôts d'un projet, par ordre alphabétique."""
+    projet = projet.strip().upper()
+    autorises = projets_autorises()
+    if autorises and projet not in autorises:
+        raise BitbucketErreur(f"Projet Bitbucket {projet} non autorisé (autorisés : {', '.join(sorted(autorises))}).")
+    resultat = []
+    for v in _pages(profil, f"{API}/projects/{quote(projet)}/repos", maximum=500):
+        liens = [l.get("href", "") for l in (v.get("links") or {}).get("clone", []) if l.get("name") in ("http", "https")]
+        url = liens[0] if liens else f"{adresse(profil)}/scm/{projet.lower()}/{v['slug']}.git"
+        resultat.append((v["slug"], re.sub(r"//[^/@]+@", "//", url)))   # sans identifiant dans l'adresse
+    return sorted(resultat)
+
+
 def _depuis_url(url: str) -> tuple | None:
     """(PROJET, depot) d'une URL de clone (…/scm/PROJ/depot.git) ou de navigation (…/projects/PROJ/repos/depot)."""
     m = re.search(r"/scm/([^/]+)/([^/]+?)(?:\.git)?/?$", url) \
@@ -184,7 +207,13 @@ def _branche_ou_defaut(profil, projet: str, depot: str, branche: str, branche_pr
 def _depots_du_profil(profil) -> list:
     cibles = []
     for source in (profil.sources if profil else []):
-        if source.depot and _depuis_url(source.depot):
+        projet = projet_depuis_url(source.depot) if source.depot else ""
+        if projet:
+            try:
+                cibles += [(projet, d, f"{projet}/{d}") for d, _ in depots_du_projet(profil, projet)[:DEPOTS_MAX]]
+            except BitbucketErreur:
+                pass
+        elif source.depot and _depuis_url(source.depot):
             try:
                 projet, depot, _ = resoudre(profil, source.nom)
                 cibles.append((projet, depot, source.nom))
