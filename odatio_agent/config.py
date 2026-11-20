@@ -403,12 +403,19 @@ def _profil(nom: str, brut: dict, interdits_par_defaut: bool, gere: bool = False
     logs_ssh = None
     if logs.get("ssh"):
         s = logs["ssh"]
-        logs_ssh = LogsSsh(hote=str(s.get("hote", "")).strip(), dossiers=[str(d).strip() for d in s.get("dossiers", [])],
-                           utilisateur=str(s.get("utilisateur", "")).strip(), port=str(s.get("port", "")).strip(),
-                           cle=str(s.get("cle", "")).strip(), rebond=str(s.get("rebond", "")).strip(),
-                           motif=str(s.get("motif", "")).strip() or LogsSsh.motif,
-                           horodatage=str(s.get("horodatage", "")) or LogsSsh.horodatage,
-                           mot_de_passe_env=str(s.get("mot_de_passe_env", "")).strip())
+        env_ssh = str(s.get("mot_de_passe_env", "")).strip()
+        logs_ssh = LogsSsh(
+            hote=str(s.get("hote", "")).strip(),
+            dossiers=[str(d).strip() for d in s.get("dossiers", [])],
+            utilisateur=str(s.get("utilisateur", "")).strip(),
+            port=str(s.get("port", "")).strip(),
+            cle=str(s.get("cle", "")).strip(),
+            rebond=str(s.get("rebond", "")).strip(),
+            motif=str(s.get("motif", "")).strip() or LogsSsh.motif,
+            horodatage=str(s.get("horodatage", "")) or LogsSsh.horodatage,
+            mot_de_passe_env=env_ssh,
+            mot_de_passe=secret(env_ssh),
+        )
         problemes = erreurs_logs_ssh(logs_ssh)
         if problemes:
             raise ConfigError(f"Profil « {nom} », logs SSH : " + " ; ".join(problemes) + ".")

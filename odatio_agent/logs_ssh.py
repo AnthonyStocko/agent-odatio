@@ -71,7 +71,7 @@ class LogsSsh:
     motif: str = "*.log*"            # fichiers retenus dans les dossiers (inclut les .log.gz de la rotation)
     horodatage: str = "%Y-%m-%d %H:%M:%S"   # format de l'heure en début de ligne (après un « [ » éventuel)
     mot_de_passe_env: str = ""       # variable du .env qui porte le mot de passe (vide : connexion par clé)
-    mot_de_passe: str = field(default="", repr=False, compare=False)   # rempli à l'usage, jamais enregistré
+    mot_de_passe: str = field(default="", repr=False, compare=False)   # rempli au chargement du profil, jamais enregistré
 
 
 @dataclass
