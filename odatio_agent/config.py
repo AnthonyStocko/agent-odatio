@@ -102,6 +102,10 @@ class Reglages:
     budget_usd: float = 0.0   # plafond de coût par question (0 = aucun)
     requetes_base: int = 15   # requêtes base au plus par question
     requetes_base_generation: int = 40  # requêtes base au plus pour une question qui génère un fichier
+    # Synthèse client (synthese.py) : une session par lot d'éléments, puis une session finale
+    synthese_lot: int = 12            # éléments de l'inventaire expliqués par lot
+    synthese_max_tours: int = 80      # étapes au plus par session de synthèse (lot ou finale)
+    requetes_base_synthese: int = 30  # accès base au plus par session de synthèse
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +242,10 @@ def reglages() -> Reglages:
     return Reglages(modele=str(brut.get("modele", "")).strip(), effort=str(brut.get("effort", "")).strip(),
                     max_tours=int(brut.get("max_tours", 40)), budget_usd=float(brut.get("budget_usd", 0)),
                     requetes_base=int(brut.get("requetes_base", 15)),
-                    requetes_base_generation=int(brut.get("requetes_base_generation", 40)))
+                    requetes_base_generation=int(brut.get("requetes_base_generation", 40)),
+                    synthese_lot=int(brut.get("synthese_lot", 12)),
+                    synthese_max_tours=int(brut.get("synthese_max_tours", 80)),
+                    requetes_base_synthese=int(brut.get("requetes_base_synthese", 30)))
 
 
 def _identifiant(nom: str) -> str:

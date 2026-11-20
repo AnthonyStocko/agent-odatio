@@ -7,6 +7,10 @@ outils maison base, logs et fichiers d'interface exposés en serveur MCP dans le
 dans .cache/documentation) et fichier_ecrire, dans le dossier des fichiers générés du profil, après
 generation_demarrer : cet appel annonce une génération demandée par l'utilisateur et porte le plafond d'accès
 base de la question à reglages.requetes_base_generation.
+
+Session de synthèse client (synthese={"mode": "lot" | "finale", "numero", "dossier"}) : outils de lecture et
+synthese_demarrer / synthese_enregistrer seulement (rien d'autre n'écrit), plafonds propres à la synthèse
+(reglages.requetes_base_synthese, reglages.synthese_max_tours), sans relever ceux des questions.
 """
 from dataclasses import dataclass, field
 
@@ -15,7 +19,7 @@ from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKCli
 
 from pathlib import Path
 
-from . import bitbucket, config, consignes, documentation, ecran, fichiers, logs_ssh, outils
+from . import bitbucket, config, consignes, documentation, ecran, fichiers, logs_ssh, outils, synthese as synth
 from .garde import creer_garde
 
 SERVEUR = "odatio"
@@ -32,6 +36,7 @@ class Bilan:
     reponse: str = ""      # texte final de la réponse (sans les commentaires intermédiaires)
     fichiers: list = field(default_factory=list)  # fichiers écrits pendant la question (fichiers.ecrire)
     documentation: dict | None = None  # {"dossier", "sujet"} si un document a été enregistré pendant la question
+    synthese: bool = False   # une partie de synthèse client a été enregistrée pendant la question
 
 
 def _texte(texte: str, erreur: bool = False) -> dict:
@@ -45,16 +50,20 @@ async def _vers_texte(coroutine) -> dict:
 class Session:
     def __init__(self, profil: config.Profil, sources: list, logs: list, reglages: config.Reglages,
                  utilisateur: str = "", reprise: str = "", ticket: dict | None = None,
-                 dossier_documentation: Path | None = None, lecture_seule: bool = False):
+                 dossier_documentation: Path | None = None, lecture_seule: bool = False,
+                 synthese: dict | None = None):
         """reprise : identifiant d'une conversation précédente à poursuivre (Bilan.session_id), utilisé par
         l'IHM qui ouvre une session par question. ticket : tâche Jira à tester (outils.jira_ticket), donnée
         à l'agent comme contexte. dossier_documentation : dossier déjà préparé (captures d'écran déposées), ou
         documentation déjà enregistrée à poursuivre (documentation_demarrer renvoie alors le document existant) ;
         sinon documentation_demarrer en crée un quand l'utilisateur en demande une. lecture_seule : question
         transmise par le manager (mcp_server.py --manager) : ni fichier d'interface, ni documentation, ni
-        navigation dans l'application, seulement lire et répondre."""
+        navigation dans l'application, seulement lire et répondre. synthese : étape d'une synthèse client
+        ({"mode": "lot" | "finale", "numero", "dossier"}, synthese.py) : lecture et outils de synthèse seulement."""
         self.profil, self.reglages, self.ticket = profil, reglages, ticket
         self.lecture_seule = lecture_seule
+        self.synthese = synthese
+        self.synthese_enregistree = False
         self.requetes_base, self.generation, self.fichiers = 0, False, []
         self.dossier_fourni = Path(dossier_documentation) if dossier_documentation else None
         self.dossier_documentation = self.dossier_fourni
@@ -68,7 +77,8 @@ class Session:
         noms_maison = [f"mcp__{SERVEUR}__{t.name}" for t in outils_maison]
 
         self.options = ClaudeAgentOptions(
-            system_prompt=consignes.construire(profil, sources, logs, utilisateur, reglages, ticket, lecture_seule),
+            system_prompt=consignes.construire(profil, sources, logs, utilisateur, reglages, ticket, lecture_seule,
+                                               synthese=bool(synthese)),
             tools=OUTILS_FICHIERS,                       # aucun autre outil intégré : ni Bash, ni Edit, ni Write
             allowed_tools=OUTILS_FICHIERS + noms_maison,  # autorisés sans confirmation
             permission_mode="dontAsk",                    # tout le reste est refusé
@@ -79,7 +89,7 @@ class Session:
             add_dirs=[str(r) for r in racines[1:]] + [str(sortie)],
             hooks={"PreToolUse": [HookMatcher(matcher="Read|Grep|Glob",
                                               hooks=[creer_garde(racines, profil.fichiers_interdits, sortie)])]},
-            max_turns=reglages.max_tours or None,
+            max_turns=(reglages.synthese_max_tours if synthese else reglages.max_tours) or None,
             max_budget_usd=reglages.budget_usd or None,
             model=reglages.modele or None,
             effort=reglages.effort or None,
@@ -91,6 +101,8 @@ class Session:
     # -- Outils maison ------------------------------------------------------------------------------
 
     def plafond_base(self) -> int:
+        if self.synthese:
+            return self.reglages.requetes_base_synthese
         large = self.generation or self.documentation_ouverte
         return self.reglages.requetes_base_generation if large else self.reglages.requetes_base
 
@@ -162,6 +174,8 @@ class Session:
 
         if bitbucket.configure(profil):
             liste += self._outils_bitbucket(executer)
+        if self.synthese:               # étape de synthèse client : lecture + outils de synthèse, rien d'autre
+            return liste + self._outils_synthese()
         if self.lecture_seule:          # question du manager : aucun outil qui écrit ou agit
             return liste
         liste += self._outils_documentation()
@@ -361,6 +375,46 @@ class Session:
 
         return [documentation_demarrer, documentation_enregistrer]
 
+    def _outils_synthese(self) -> list:
+        """Étape d'une synthèse client (synthese.py) : la marche à suivre et les données du lot, puis
+        l'enregistrement validé de la partie (seule écriture, dans le dossier de la synthèse)."""
+        mode, dossier, numero = self.synthese["mode"], Path(self.synthese["dossier"]), int(self.synthese.get("numero")
+                                                                                         or 0)
+
+        @tool("synthese_demarrer", "Synthèse client : renvoie la marche à suivre et les données de cette étape (lot "
+              "d'éléments à expliquer, ou partie finale). À appeler UNE fois, avant toute recherche.",
+              {"type": "object", "properties": {}})
+        async def synthese_demarrer(args):
+            try:
+                donnees = synth.donnees_lot(dossier, numero) if mode == "lot" else synth.donnees_finale(dossier)
+            except (synth.SyntheseErreur, StopIteration, KeyError) as e:
+                return _texte(f"ERREUR : synthèse illisible ({e}).", True)
+            outils.journal(self.profil, "synthese_demarrer", {"mode": mode, "lot": numero})
+            return _texte(consignes.synthese(mode, donnees, self.plafond_base()))
+
+        @tool("synthese_enregistrer", "Synthèse client : enregistre la réponse complète de cette étape, contrôlée "
+              "(source et statut sur chaque ligne, aucun secret, e-mail ni téléphone). Si elle est refusée, corrige "
+              "les points signalés et renvoie-la en entier.",
+              synth.SCHEMA_LOT if mode == "lot" else synth.SCHEMA_FINALE)
+        async def synthese_enregistrer(args):
+            try:
+                if mode == "lot":
+                    partie = synth.enregistrer_lot(dossier, numero, args)
+                    resume = (f"{len(partie['elements'])} élément(s) expliqué(s), {len(partie['non_expliques'])} non "
+                              f"expliqué(s)")
+                else:
+                    partie = synth.enregistrer_finale(dossier, args)
+                    resume = (f"{len(partie['contexte'])} ligne(s) de contexte, {len(partie['configuration'])} de "
+                              f"configuration, {len(partie['audit'])} constat(s)")
+            except synth.SyntheseErreur as e:
+                outils.journal(self.profil, "synthese_enregistrer", {"mode": mode, "lot": numero}, str(e)[:300])
+                return _texte(str(e), True)
+            self.synthese_enregistree = True
+            outils.journal(self.profil, "synthese_enregistrer", {"mode": mode, "lot": numero})
+            return _texte(f"Enregistré : {resume}. Termine par une ligne, sans recopier la synthèse.")
+
+        return [synthese_demarrer, synthese_enregistrer]
+
     def _outils_ecran(self) -> list:
         """Navigation dans l'application pour les captures d'écran d'une documentation (ecran.py)."""
 
@@ -449,6 +503,7 @@ class Session:
         réponse et les outils utilisés au fil de l'eau."""
         self.requetes_base, self.generation, self.fichiers = 0, False, []
         self.document, self.documentation_ouverte = None, False
+        self.synthese_enregistree = False
         self.dossier_documentation = self.dossier_fourni   # documentation en cours, ou nouveau dossier
         await self.client.query(question)
         bilan = Bilan(cout_usd=None, tours=0, erreur=False)
@@ -464,6 +519,7 @@ class Session:
                               message="; ".join(message.errors or []) or (message.terminal_reason or ""),
                               session_id=message.session_id or "", reponse=message.result or "")
         bilan.fichiers = list(self.fichiers)
+        bilan.synthese = self.synthese_enregistree
         if self.document and self.dossier_documentation:
             bilan.documentation = {"dossier": str(self.dossier_documentation),
                                    "sujet": documentation.sujet(self.dossier_documentation)}
