@@ -185,13 +185,16 @@ class StandardSurBitbucket(GitSimule):
                                          config.Reglages())
             self.assertIn("INDISPONIBLE", texte)
 
-    def test_synthese_refusee_sans_standard_local(self):
+    def test_synthese_accepte_un_standard_sur_bitbucket(self):
         from odatio_agent import synthese
-        with self.assertRaisesRegex(synthese.SyntheseErreur, "copie locale"):
-            synthese.verifier_standard(self.profil_mixte())
-        with self.assertRaises(synthese.SyntheseErreur):
-            synthese.verifier_standard(self.profil_mixte(), "Standard")
+        self.assertEqual(synthese.verifier_standard(self.profil_mixte()), "Standard")
+        self.assertEqual(synthese.verifier_standard(self.profil_mixte(), "Standard"), "Standard")
         self.assertEqual(synthese.verifier_standard(self.profil_mixte(standard_local=True)), "Standard")
+        with self.assertRaisesRegex(synthese.SyntheseErreur, "inconnue"):
+            synthese.verifier_standard(self.profil_mixte(), "autre")
+        self.assertTrue(synthese.sur_bitbucket(self.profil_mixte()))
+        self.assertEqual(sources.lues_sur_bitbucket(self.profil_mixte(standard_local=True))[0].nom, "client")
+        self.assertEqual(sources.locales(self.profil_mixte(standard_local=True)), [("Standard", self.source)])
 
 
 class AccesBitbucket(unittest.TestCase):

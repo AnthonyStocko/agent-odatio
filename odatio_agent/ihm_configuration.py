@@ -439,6 +439,17 @@ def _onglet_claude() -> None:
                                      value=int(reg.synthese_max_tours))
     requetes_synthese = c3.number_input("Accès base par session de synthèse", min_value=0, max_value=200,
                                         value=int(reg.requetes_base_synthese))
+    st.caption("Inventaire de la synthèse lu sur Bitbucket (sources dépôt ou projet, jamais clonées pour la "
+               "synthèse), sans appel au modèle. Un plafond atteint est signalé dans le rapport.")
+    c1, c2, c3 = st.columns(3)
+    synthese_depots = c1.number_input("Dépôts parcourus", min_value=1, max_value=1000,
+                                      value=int(reg.synthese_depots), help="Standard et spécifique confondus.")
+    synthese_comparaisons = c2.number_input(
+        "Fichiers comparés au Standard", min_value=0, max_value=100000, value=int(reg.synthese_comparaisons),
+        help="Fichiers du spécifique au même chemin qu'un fichier du Standard : deux lectures chacun.")
+    synthese_lectures = c3.number_input("Fichiers lus pour les tickets", min_value=0, max_value=50000,
+                                        value=int(reg.synthese_lectures),
+                                        help="Recherche des clés de tickets citées dans les fichiers spécifiques.")
 
     if st.button("Enregistrer", type="primary", key="enregistrer-claude"):
         config.enregistrer_secrets({"CLAUDE_AUTH": mode, "CLAUDE_CONFIG_DIR": dossier if mode == "compte" else compte["dossier"],
@@ -449,7 +460,10 @@ def _onglet_claude() -> None:
                                                requetes_base_generation=int(requetes_generation),
                                                synthese_lot=int(synthese_lot),
                                                synthese_max_tours=int(synthese_tours),
-                                               requetes_base_synthese=int(requetes_synthese)),
+                                               requetes_base_synthese=int(requetes_synthese),
+                                               synthese_depots=int(synthese_depots),
+                                               synthese_comparaisons=int(synthese_comparaisons),
+                                               synthese_lectures=int(synthese_lectures)),
                                config.tous_les_profils())
             st.success("Réglages Claude enregistrés : ils s'appliquent dès la prochaine question.")
         except config.ConfigError as e:

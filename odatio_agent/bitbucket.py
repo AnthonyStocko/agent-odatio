@@ -70,15 +70,19 @@ def projets_autorises() -> set:
 # Appels HTTP
 # ---------------------------------------------------------------------------
 
-def _get(profil, chemin: str, params: dict | None = None, brut: bool = False):
+def _get(profil, chemin: str, params: dict | None = None, brut: bool = False, delai: float = DELAI,
+         session=None, flux: bool = False):
+    """GET authentifié ; ``session`` (requests.Session) réutilise les connexions, ``flux`` ne télécharge le
+    corps qu'à la lecture (réponse brute)."""
     racine = adresse(profil)
     jeton = config.secret("BITBUCKET_HTTP_TOKEN")
     if not racine or not jeton:
         raise BitbucketErreur("Bitbucket n'est pas configuré (onglet Configuration, Accès).")
     register_secrets([jeton])
     try:
-        reponse = requests.get(racine + chemin, params=params or {}, timeout=DELAI,
-                               headers={"Authorization": f"Bearer {jeton}", "Accept": "application/json"})
+        reponse = (session or requests).get(racine + chemin, params=params or {}, timeout=delai, stream=flux,
+                                            headers={"Authorization": f"Bearer {jeton}",
+                                                     "Accept": "application/json"})
     except requests.exceptions.SSLError:
         raise BitbucketErreur("Certificat du serveur Bitbucket refusé : si ton entreprise a sa propre autorité de "
                               "certification, indique son fichier dans la variable REQUESTS_CA_BUNDLE.")
@@ -109,11 +113,14 @@ def _message(reponse) -> str:
         return ""
 
 
-def _pages(profil, chemin: str, params: dict | None = None, maximum: int = 500, taille: int = 100) -> list:
-    """Valeurs d'une ressource paginée, jusqu'à maximum."""
+def _pages(profil, chemin: str, params: dict | None = None, maximum: int = 500, taille: int = 100,
+           get=None) -> list:
+    """Valeurs d'une ressource paginée, jusqu'à maximum ; ``get(profil, chemin, params)`` remplace _get (compteur
+    d'appels, délai, connexions réutilisées)."""
+    get = get or _get
     valeurs, debut = [], 0
     while len(valeurs) < maximum:
-        page = _get(profil, chemin, {**(params or {}), "start": debut, "limit": min(taille, maximum - len(valeurs))})
+        page = get(profil, chemin, {**(params or {}), "start": debut, "limit": min(taille, maximum - len(valeurs))})
         valeurs += page.get("values", [])
         if page.get("isLastPage", True) or page.get("nextPageStart") is None:
             break
@@ -419,6 +426,32 @@ def comparer(profil, depot: str, branche: str, vers: str = "", fichier: str = ""
         lignes.append(f"- [{c.get('type', '?')}] {chemin}{renomme}")
     lignes.append("\nPour le détail d'un fichier : même outil avec « fichier ».")
     return _borner("\n".join(lignes))
+
+
+def contenu_brut(profil, projet: str, depot: str, chemin: str, branche: str = "", maximum: int = 1_000_000,
+                 get=None) -> tuple:
+    """(octets, tronqué) d'un fichier sur une branche, au plus ``maximum`` octets lus ; pour un traitement
+    automatique (synthèse client), jamais montré tel quel à l'agent. Fichier interdit du profil : refusé."""
+    chemin = chemin.strip().strip("/")
+    if _interdit(chemin, profil):
+        raise BitbucketErreur("Fichier de secrets (mots de passe, clés) : lecture refusée.")
+    autorises = projets_autorises()
+    if autorises and projet.upper() not in autorises:
+        raise BitbucketErreur(f"Projet Bitbucket {projet} non autorisé.")
+    reponse = (get or _get)(profil, _chemin_depot(projet, depot) + "/raw/" + quote(chemin),
+                            {"at": _ref(branche)} if branche else {}, brut=True, flux=True)
+    try:
+        lus, taille = [], 0
+        for bloc in reponse.iter_content(65536):
+            lus.append(bloc)
+            taille += len(bloc)
+            if taille > maximum:
+                return b"".join(lus)[:maximum], True
+        return b"".join(lus), False
+    except requests.RequestException as e:
+        raise BitbucketErreur(f"Lecture interrompue ({type(e).__name__}).")
+    finally:
+        reponse.close()
 
 
 def _formater_diff(donnees: dict) -> str:

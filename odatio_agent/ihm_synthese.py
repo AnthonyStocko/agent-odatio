@@ -2,6 +2,10 @@
 Page « Synthèse client » de l'IHM : dossier de synthèse d'un projet pour le démarrage et le passage au support
 édition (synthese.py). Même projet que la page Assistant (st.session_state.profil_actif).
 
+Sources : dès qu'une source du projet est un dépôt ou un projet Bitbucket, l'inventaire lit le code par l'API
+Bitbucket (synthese.inventorier_bitbucket) et AUCUNE source n'est clonée pour la synthèse ; les sessions des
+lots lisent alors les fichiers avec les outils bitbucket_*. Sinon, inventaire des dossiers locaux.
+
 Arrêt et reprise : un clic pendant la génération (bouton « Arrêter », ou tout autre) fait rejouer le script par
 Streamlit, qui interrompt la génération au prochain affichage de progression. L'état est écrit après chaque lot :
 seul le lot en cours est perdu, et « Reprendre » repart du lot suivant. Fermer l'onglet ou un plantage ont le même
@@ -13,7 +17,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from . import config, historique, ihm_assistant, sources
+from . import bitbucket, config, historique, ihm_assistant, sources
 from . import synthese as synth
 from .session import Session
 
@@ -54,18 +58,55 @@ def _executer(profil, dossier: Path, prets, logs) -> None:
         statut.update(label="Synthèse incomplète : « Reprendre » relance les étapes restantes", state="error")
 
 
-def _nouvelle(profil, standard: str) -> None:
+def _sources_des_sessions(profil, sur_bitbucket: bool):
+    """(sources locales, logs) des sessions de la synthèse : sur Bitbucket, seulement les dossiers locaux du
+    projet, sans rien cloner ; sinon les sources préparées comme pour l'assistant."""
+    if sur_bitbucket:
+        return sources.locales(profil), sources.dossiers_logs(profil)
+    return ihm_assistant._preparer(profil)
+
+
+def _inventaire_bitbucket(profil, standard: str) -> dict | None:
+    statut = st.status("Inventaire sur Bitbucket, sans clonage ni appel au modèle…", expanded=True)
+
+    def sur_etape(texte: str) -> None:      # aussi un point d'arrêt pour Streamlit (bouton « Arrêter »)
+        statut.write(texte)
+        statut.update(label=texte)
+
     try:
-        prets, logs = ihm_assistant._preparer(profil)
+        inventaire = synth.inventorier_bitbucket(profil, standard, config.reglages(), sur_etape)
+    except (synth.SyntheseErreur, bitbucket.BitbucketErreur) as e:
+        statut.update(label="Inventaire impossible", state="error")
+        st.error(str(e))
+        return None
+    b = inventaire["bitbucket"]
+    statut.update(label=f"Inventaire Bitbucket : {len(inventaire['elements'])} élément(s), {b['appels']} appel(s), "
+                        f"{round(b['duree_s'])} s", state="complete", expanded=False)
+    if inventaire["limites"]:
+        with st.expander(f"Limites de l'inventaire ({len(inventaire['limites'])}), reprises dans le rapport"):
+            for limite in inventaire["limites"]:
+                st.caption(limite)
+    return inventaire
+
+
+def _nouvelle(profil, standard: str) -> None:
+    distant = synth.sur_bitbucket(profil)
+    try:
+        prets, logs = _sources_des_sessions(profil, distant)
     except sources.SourceError as e:
         st.error(str(e))
         return
-    with st.spinner("Inventaire des éléments spécifiques (sans appel au modèle)…"):
-        try:
-            inventaire = synth.inventorier(profil.nom, [(n, str(c)) for n, c in prets], standard)
-        except synth.SyntheseErreur as e:
-            st.error(str(e))
+    if distant:
+        inventaire = _inventaire_bitbucket(profil, standard)
+        if inventaire is None:
             return
+    else:
+        with st.spinner("Inventaire des éléments spécifiques (sans appel au modèle)…"):
+            try:
+                inventaire = synth.inventorier(profil.nom, [(n, str(c)) for n, c in prets], standard)
+            except synth.SyntheseErreur as e:
+                st.error(str(e))
+                return
     if not inventaire["elements"]:
         st.warning("Aucun élément spécifique trouvé : les sources spécifiques sont identiques au Standard.")
         return
@@ -78,8 +119,8 @@ def _nouvelle(profil, standard: str) -> None:
 
 def _reprendre(profil, dossier: Path) -> None:
     try:
-        prets, logs = ihm_assistant._preparer(profil)
-    except sources.SourceError as e:
+        prets, logs = _sources_des_sessions(profil, "bitbucket" in synth.inventaire(dossier))
+    except (sources.SourceError, synth.SyntheseErreur) as e:
         st.error(str(e))
         return
     _executer(profil, dossier, prets, logs)
@@ -157,12 +198,12 @@ def page() -> None:
     standard = st.selectbox("Source Standard", noms_sources,
                             index=noms_sources.index(defaut) if defaut in noms_sources else 0,
                             help="Les autres sources sont traitées comme spécifiques au client.")
-    try:
-        synth.verifier_standard(profil, standard)
-        refus = ""
-    except synth.SyntheseErreur as e:
-        refus = str(e)
-        st.error(refus)
+    if synth.sur_bitbucket(profil):
+        lues = ", ".join(s.nom for s in sources.lues_sur_bitbucket(profil))
+        st.caption(f"Sources lues sur Bitbucket, sans clonage : {lues}. L'inventaire passe par l'API Bitbucket "
+                   "(sans appel au modèle) ; les lots lisent les fichiers avec les outils Bitbucket.")
+        if not bitbucket.configure(profil):
+            st.error("Bitbucket n'est pas configuré : renseigne le jeton dans la page Configuration, Accès.")
 
     precedentes = synth.lister(nom)
     if precedentes and not etat.synthese_dossier:
@@ -182,13 +223,17 @@ def page() -> None:
     except synth.SyntheseErreur:
         dossier, en_cours, etat.synthese_dossier = None, False, ""
     with st.container(horizontal=True):
-        nouvelle = st.button("Générer une nouvelle synthèse", type="primary", disabled=bool(refus))
+        nouvelle = st.button("Générer une nouvelle synthèse", type="primary",
+                             disabled=synth.sur_bitbucket(profil) and not bitbucket.configure(profil))
         reprendre = en_cours and st.button("Reprendre", help="Repart du premier lot non terminé.")
         st.button("Arrêter", type="tertiary", help="Interrompt la génération : le lot en cours est perdu, les "
                                                     "lots terminés sont gardés.")
-    st.caption(f"Réglages (page Configuration) : {config.reglages().synthese_lot} éléments par lot, "
-               f"{config.reglages().requetes_base_synthese} accès base et {config.reglages().synthese_max_tours} "
-               f"étapes au plus par session ; le coût maximal par question s'applique à chaque session.")
+    reg = config.reglages()
+    st.caption(f"Réglages (page Configuration) : {reg.synthese_lot} éléments par lot, "
+               f"{reg.requetes_base_synthese} accès base et {reg.synthese_max_tours} étapes au plus par session ; "
+               "le coût maximal par question s'applique à chaque session."
+               + (f" Inventaire Bitbucket : {reg.synthese_depots} dépôts, {reg.synthese_comparaisons} fichiers "
+                  f"comparés et {reg.synthese_lectures} lus au plus." if synth.sur_bitbucket(profil) else ""))
 
     if nouvelle:
         _nouvelle(profil, standard)

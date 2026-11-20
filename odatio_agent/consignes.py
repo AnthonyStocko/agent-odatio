@@ -251,13 +251,15 @@ L'inventaire ci-dessous a été établi sans modèle : chaque élément regroupe
 absents du Standard ou différents de lui (« surcharge » : le Standard a le même fichier ou la même classe ;
 « ajout » : propre au client ; « paramétrage »). Ton travail : expliquer CHAQUE élément du lot, rien d'autre.
 1. Pour chaque élément, lis les fichiers principaux (Read avec offset / limit, Grep) ; pour une surcharge,
-   compare avec le fichier Standard indiqué pour dire ce qui change. Base seulement si l'objectif en dépend
+   compare avec le fichier Standard indiqué pour dire ce qui change. Un élément situé dans un dépôt Bitbucket
+   (et un fichier Standard noté « PROJET/depot:chemin @ branche ») se lit sur Bitbucket : bitbucket_fichiers et
+   bitbucket_lire avec ce dépôt, ce chemin et cette branche. Base seulement si l'objectif en dépend
    (paramètre lu par le code) ; Jira (jira_ticket) seulement pour un ticket cité dont le code ne suffit pas à
    comprendre l'objectif.
 2. Appelle synthese_enregistrer UNE fois avec :
    - elements : un objet par élément expliqué : id (tel quel), objectif (une phrase métier : ce que le client
      obtient), composants (fichiers principaux), ticket (clé d'origine si retrouvée, sinon vide), sources
-     (fichier:ligne lus), statut ;
+     (fichier:ligne lus ; « dépôt:chemin:ligne » pour un fichier lu sur Bitbucket), statut ;
    - non_expliques : les éléments que tu ne peux pas expliquer, avec la raison et où chercher ;
    - constats : seulement les incohérences PROUVÉES vues en lisant ce lot (paramètre absent ou contradictoire,
      surcharge d'un fichier Standard qui a évolué depuis, code mort…), avec sévérité, preuves et statut ; aucune
