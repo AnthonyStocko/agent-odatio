@@ -191,6 +191,12 @@ def tester(profil: config.Profil, maj: bool) -> int:
     except sources.SourceError as e:
         print(f"{ROUGE}✘{FIN} Sources : {e}")
         ok_global = False
+    for source in sources.distantes(profil):
+        try:
+            print(f"{VERT}✔{FIN} Source « {source.nom} » : {sources.verifier_distante(profil, source)}")
+        except sources.SourceError as e:
+            print(f"{ROUGE}✘{FIN} {e}")
+            ok_global = False
     for dossier in sources.dossiers_logs(profil):
         print(f"{VERT}✔{FIN} Logs : {dossier}")
     erreur = config.erreur_dossier_fichiers(profil)
@@ -210,6 +216,7 @@ async def synthetiser(profil: config.Profil, maj: bool, standard: str = "", doss
         cible = Path(dossier)
         synthese.etat(cible)
     else:
+        standard = synthese.verifier_standard(profil, standard)
         print(f"{GRIS}Inventaire des éléments spécifiques (sans appel au modèle)…{FIN}")
         inventaire = synthese.inventorier(profil.nom, [(n, str(c)) for n, c in prets], standard)
         if not inventaire["elements"]:

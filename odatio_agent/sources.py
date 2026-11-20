@@ -7,6 +7,9 @@ ses dépôts sont alors clonés dans .cache/sources/<profil>/<nom>/<depot>, et u
 récupéré à la mise à jour suivante. La branche de la source s'applique aux dépôts qui l'ont ; les autres
 suivent leur branche par défaut.
 
+Le Standard n'est jamais cloné : une source dépôt dont le nom contient « standard » est lue par l'agent sur
+Bitbucket (outils bitbucket_*), sans copie locale. Un Standard en dossier local reste lu tel quel.
+
 Authentification Git : jeton HTTP Bitbucket (BITBUCKET_HTTP_TOKEN dans le .env), passé en en-tête à chaque
 commande et jamais écrit dans l'URL ni dans la configuration du clone.
 """
@@ -35,6 +38,27 @@ def _git(args: list, cwd: Path | None = None) -> str:
         message = mask_secrets((resultat.stderr or resultat.stdout).strip())[0]
         raise SourceError(f"git {args[0]} a échoué : {message[-500:]}")
     return resultat.stdout
+
+
+def est_standard(source: config.Source) -> bool:
+    """Source Standard : son nom contient « standard » (même règle que la synthèse client)."""
+    return "standard" in source.nom.lower()
+
+
+def distantes(profil: config.Profil) -> list:
+    """Sources lues sur Bitbucket sans être clonées : le Standard quand il est donné par un dépôt ou un projet."""
+    return [s for s in profil.sources if s.depot and not s.chemin and est_standard(s)]
+
+
+def verifier_distante(profil: config.Profil, source: config.Source) -> str:
+    """Constat d'accès à une source lue sur Bitbucket (lève SourceError si elle n'est pas lisible)."""
+    if not bitbucket.configure(profil):
+        raise SourceError(f"Source « {source.nom} » : lue sur Bitbucket, mais Bitbucket n'est pas configuré "
+                          "(jeton dans l'onglet Configuration, Accès).")
+    try:
+        return f"lue sur Bitbucket, non clonée ({bitbucket.acces(profil, source.depot)})"
+    except bitbucket.BitbucketErreur as e:
+        raise SourceError(f"Source « {source.nom} » (Bitbucket) : {e}")
 
 
 def _depot(cible: Path, url: str, branche: str, mettre_a_jour: bool, journal, libelle: str) -> None:
@@ -86,9 +110,13 @@ def _projet(profil: config.Profil, source: config.Source, projet: str, mettre_a_
 
 
 def preparer(profil: config.Profil, mettre_a_jour: bool = True, journal=print) -> list:
-    """Renvoie [(nom, chemin absolu)] des sources du profil, en clonant ou mettant à jour les dépôts."""
+    """Renvoie [(nom, chemin absolu)] des sources locales du profil, en clonant ou mettant à jour les dépôts.
+    Le Standard en dépôt (voir distantes) n'y figure pas : il n'est jamais cloné."""
     prets = []
+    a_distance = distantes(profil)
     for source in profil.sources:
+        if source in a_distance:
+            continue
         if source.chemin:
             chemin = Path(source.chemin).expanduser().resolve()
             if not chemin.is_dir():

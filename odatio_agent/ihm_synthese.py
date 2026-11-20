@@ -157,6 +157,12 @@ def page() -> None:
     standard = st.selectbox("Source Standard", noms_sources,
                             index=noms_sources.index(defaut) if defaut in noms_sources else 0,
                             help="Les autres sources sont traitées comme spécifiques au client.")
+    try:
+        synth.verifier_standard(profil, standard)
+        refus = ""
+    except synth.SyntheseErreur as e:
+        refus = str(e)
+        st.error(refus)
 
     precedentes = synth.lister(nom)
     if precedentes and not etat.synthese_dossier:
@@ -176,7 +182,7 @@ def page() -> None:
     except synth.SyntheseErreur:
         dossier, en_cours, etat.synthese_dossier = None, False, ""
     with st.container(horizontal=True):
-        nouvelle = st.button("Générer une nouvelle synthèse", type="primary")
+        nouvelle = st.button("Générer une nouvelle synthèse", type="primary", disabled=bool(refus))
         reprendre = en_cours and st.button("Reprendre", help="Repart du premier lot non terminé.")
         st.button("Arrêter", type="tertiary", help="Interrompt la génération : le lot en cours est perdu, les "
                                                     "lots terminés sont gardés.")

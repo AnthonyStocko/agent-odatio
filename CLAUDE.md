@@ -57,7 +57,7 @@ L'agent n'intègre jamais un fichier : l'intégration dans ODATiO reste un geste
 Commandes, depuis la racine du dépôt :
 
 ```powershell
-venv\Scripts\python.exe -m unittest                  # tests (145 tests OK au 2026-11-20)
+venv\Scripts\python.exe -m unittest                  # tests (153 tests OK au 2026-11-20)
 venv\Scripts\python.exe agent.py --profil <p> --test  # vérifie les accès d'un profil
 ```
 
@@ -102,7 +102,8 @@ committer. Les modèles sont `.env.example` et `profils.example.toml`.
      script SQL, libellés ; unité : processus, plugin, objet métier du package, module). Tickets cités dans le
      code ; version du Standard lue dans les `pom.xml` du spécifique (groupIds du Standard lus dans ses `pom.xml`,
      propriétés résolues ; à défaut, version du pom Standard, marquée « déduit »). Source Standard : choisie dans
-     la page, sinon celle dont le nom contient « standard ».
+     la page, sinon celle dont le nom contient « standard ». Il doit être en dossier local : un Standard lu sur
+     Bitbucket (non cloné) est refusé (`verifier_standard`).
   2. Une session NEUVE par lot (`Reglages.synthese_lot`), puis une session finale : `Session(synthese={...})`,
      outils de lecture + `synthese_demarrer` / `synthese_enregistrer` seulement, plafonds
      `requetes_base_synthese` et `synthese_max_tours`, bloc `SYNTHESE` ajouté au prompt système ; marches à
@@ -155,7 +156,8 @@ avant et après la modification dans la PR.
 
 - Lecture seule ; deux exceptions sur demande explicite : fichier d'interface et documentation.
 - Méthode : sources d'abord, puis base, puis logs (fenêtre étroite), puis Bitbucket seulement si les sources
-  clonées ne suffisent pas. S'arrêter dès qu'il y a de quoi répondre.
+  clonées ne suffisent pas. Exception : un Standard non cloné se lit toujours sur Bitbucket (`STANDARD_DISTANT`,
+  `METHODE_STANDARD_DISTANT`, ajoutés seulement dans ce cas). S'arrêter dès qu'il y a de quoi répondre.
 - Avec plusieurs sources : vérifier si le spécifique surcharge le Standard et distinguer les deux dans la réponse.
 - Base : décrire une table avant de l'interroger, colonnes nommées (jamais `SELECT *`), clause `WHERE`,
   plafond de requêtes par question.
@@ -202,6 +204,7 @@ avant et après la modification dans la PR.
 | Session de synthèse : aucun outil de fichier d'interface, de documentation ni de navigation ; écriture limitée au dossier de la synthèse | `session.py`, `_outils_maison()`, `_outils_synthese()` |
 | Navigation : seule l'application du projet (ou une adresse locale) peut être ouverte ; clics d'écriture refusés d'après le libellé, sauf en mode actions ; mot de passe saisi par l'outil ; 20 captures au plus | `ecran.py`, `_ECRITURE`, `_ECRITURE_LIEN` |
 | Bitbucket en lecture seule, projets autorisés, fichiers interdits jamais montrés, réponses bornées | `bitbucket.py` |
+| Standard jamais cloné : une source `depot` dont le nom contient « standard » n'est pas copiée, l'agent la lit sur Bitbucket | `sources.py`, `distantes()`, `preparer()` |
 | Secrets retirés de l'environnement, posés le temps d'un appel et masqués dans les résultats | `config.py`, `outils._environnement`, `tools/secret_tools.py` |
 | Journal des accès sans texte de requête ni données | `outils.journal` → `.cache/journal/outils.jsonl` |
 

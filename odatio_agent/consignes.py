@@ -1,5 +1,6 @@
 """Consignes système de l'agent (prompt système), construites à partir du profil choisi."""
 from . import bitbucket, config
+from . import sources as depots
 
 MODELE = """Tu es un expert fonctionnel de l'application Odatio. Tu aides {utilisateur} à comprendre comment
 l'application fonctionne : ce que fait un écran, un traitement, une règle de gestion, un paramétrage, et
@@ -124,6 +125,16 @@ METHODE_BITBUCKET = """4. Bitbucket seulement si les sources clonées ne suffise
    le diff des fichiers utiles), une classe ou un module appartient à un autre dépôt (bitbucket_chercher ou
    bitbucket_depots, puis bitbucket_fichiers et bitbucket_lire), ou on te demande une autre branche. Lis de
    façon ciblée : pas de parcours de dépôt entier. Dans tes preuves, cite dépôt, branche, fichier et ligne.
+"""
+
+STANDARD_DISTANT = """Standard, lu sur Bitbucket uniquement (il n'est pas cloné : Read, Grep et Glob ne l'atteignent pas) :
+{lignes}
+"""
+
+METHODE_STANDARD_DISTANT = """   Le Standard fait exception : il se lit TOUJOURS sur Bitbucket, et pas seulement en dernier recours.
+   Cherche-y la classe, le libellé ou le terme (bitbucket_chercher, avec projet ou depot du Standard), puis lis
+   de façon ciblée (bitbucket_fichiers, bitbucket_lire). C'est ainsi que tu vérifies si le spécifique surcharge
+   le Standard et ce que fait le Standard.
 """
 
 
@@ -294,6 +305,17 @@ def synthese(mode: str, donnees: str, plafond: int) -> str:
 def construire(profil: config.Profil, sources: list, logs: list, utilisateur: str, reglages: config.Reglages,
                ticket: dict | None = None, lecture_seule: bool = False, synthese: bool = False) -> str:
     lignes_sources = "\n".join(f"- {nom} : {chemin}" for nom, chemin in sources)
+    distantes = depots.distantes(profil)
+    avec_bitbucket = bitbucket.configure(profil)
+    if distantes:
+        lignes = "\n".join(
+            f"- {s.nom} : {bitbucket.cible(s.depot) or s.depot}"
+            + (f", branche {s.branche} (les dépôts sans cette branche : branche par défaut)" if s.branche else "")
+            + ("" if avec_bitbucket else " — INDISPONIBLE : Bitbucket n'est pas configuré ; si ta réponse dépend "
+                                         "du Standard, dis-le.")
+            for s in distantes)
+        lignes_sources = (lignes_sources + "\n\n" if lignes_sources else "") + STANDARD_DISTANT.format(
+            lignes=lignes).rstrip("\n")
 
     blocs_logs = []
     if logs:
@@ -316,18 +338,17 @@ def construire(profil: config.Profil, sources: list, logs: list, utilisateur: st
         base_txt = "\nAucun accès à la base pour cet environnement.\n"
 
     ordre = ""
-    if len(sources) > 1:
+    if len(sources) + len(distantes) > 1:
         ordre = ("   Plusieurs sources : si l'une est le socle Standard et une autre le spécifique client, regarde\n"
                  "   d'abord si le spécifique surcharge le comportement, et précise dans ta réponse ce qui relève\n"
                  "   du Standard et ce qui est propre au client.\n")
 
     jira = ("Jira (lecture seule) : outil jira_ticket pour lire un ticket cité ou lié.\n\n"
             if config.jira_configure() else "")
-    avec_bitbucket = bitbucket.configure(profil)
     bitbucket_txt = methode_bitbucket = ""
     if avec_bitbucket:
         bitbucket_txt = BITBUCKET.format(adresse=bitbucket.adresse(profil))
-        methode_bitbucket = METHODE_BITBUCKET
+        methode_bitbucket = METHODE_BITBUCKET + (METHODE_STANDARD_DISTANT if distantes else "")
     absente = ("Si la tâche n'est pas dans les sources clonées, cherche sa branche sur Bitbucket (clé du ticket\n"
                "dans le nom) et ce qu'elle change ; si tu ne la trouves pas, dis-le clairement."
                if avec_bitbucket else "Si la tâche n'est pas encore dans les sources, dis-le clairement.")
