@@ -421,6 +421,15 @@ def _onglet_claude() -> None:
         value=int(reg.requetes_base_generation),
         help="Plafond d'une question qui crée un fichier d'interface : lire le format, la donnée source et ses "
              "données liées demande plus d'accès qu'une question.")
+    st.caption("Synthèse client : une session par lot d'éléments, puis une session finale (contexte, "
+               "configuration, audit). Le coût maximal par question s'applique à chacune.")
+    c1, c2, c3 = st.columns(3)
+    synthese_lot = c1.number_input("Éléments par lot", min_value=3, max_value=40, value=int(reg.synthese_lot),
+                                   help="Éléments de l'inventaire expliqués par une même session.")
+    synthese_tours = c2.number_input("Étapes par session de synthèse", min_value=10, max_value=300,
+                                     value=int(reg.synthese_max_tours))
+    requetes_synthese = c3.number_input("Accès base par session de synthèse", min_value=0, max_value=200,
+                                        value=int(reg.requetes_base_synthese))
 
     if st.button("Enregistrer", type="primary", key="enregistrer-claude"):
         config.enregistrer_secrets({"CLAUDE_AUTH": mode, "CLAUDE_CONFIG_DIR": dossier if mode == "compte" else compte["dossier"],
@@ -428,7 +437,10 @@ def _onglet_claude() -> None:
         try:
             config.enregistrer(config.Reglages(modele=modele or "", effort=effort, max_tours=int(max_tours),
                                                budget_usd=float(budget), requetes_base=int(requetes),
-                                               requetes_base_generation=int(requetes_generation)),
+                                               requetes_base_generation=int(requetes_generation),
+                                               synthese_lot=int(synthese_lot),
+                                               synthese_max_tours=int(synthese_tours),
+                                               requetes_base_synthese=int(requetes_synthese)),
                                config.tous_les_profils())
             st.success("Réglages Claude enregistrés : ils s'appliquent dès la prochaine question.")
         except config.ConfigError as e:
