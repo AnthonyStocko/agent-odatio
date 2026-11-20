@@ -50,6 +50,24 @@ def distantes(profil: config.Profil) -> list:
     return [s for s in profil.sources if s.depot and not s.chemin and est_standard(s)]
 
 
+def lues_sur_bitbucket(profil: config.Profil) -> list:
+    """Sources données par un dépôt ou un projet Bitbucket (sans dossier local). Pour la synthèse client, elles
+    sont TOUTES lues sur Bitbucket, jamais clonées (synthese.inventorier_bitbucket)."""
+    return [s for s in profil.sources if s.depot and not s.chemin]
+
+
+def locales(profil: config.Profil) -> list:
+    """[(nom, chemin absolu)] des sources en dossier local, sans rien cloner ni mettre à jour."""
+    prets = []
+    for source in profil.sources:
+        if source.chemin:
+            chemin = Path(source.chemin).expanduser().resolve()
+            if not chemin.is_dir():
+                raise SourceError(f"Source « {source.nom} » : dossier introuvable ({chemin}).")
+            prets.append((source.nom, chemin))
+    return prets
+
+
 def verifier_distante(profil: config.Profil, source: config.Source) -> str:
     """Constat d'accès à une source lue sur Bitbucket (lève SourceError si elle n'est pas lisible)."""
     if not bitbucket.configure(profil):

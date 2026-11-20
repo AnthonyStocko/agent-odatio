@@ -57,7 +57,7 @@ L'agent n'intègre jamais un fichier : l'intégration dans ODATiO reste un geste
 Commandes, depuis la racine du dépôt :
 
 ```powershell
-venv\Scripts\python.exe -m unittest                  # tests (153 tests OK au 2026-11-20)
+venv\Scripts\python.exe -m unittest                  # tests (166 tests OK au 2026-11-20)
 venv\Scripts\python.exe agent.py --profil <p> --test  # vérifie les accès d'un profil
 ```
 
@@ -102,8 +102,20 @@ committer. Les modèles sont `.env.example` et `profils.example.toml`.
      script SQL, libellés ; unité : processus, plugin, objet métier du package, module). Tickets cités dans le
      code ; version du Standard lue dans les `pom.xml` du spécifique (groupIds du Standard lus dans ses `pom.xml`,
      propriétés résolues ; à défaut, version du pom Standard, marquée « déduit »). Source Standard : choisie dans
-     la page, sinon celle dont le nom contient « standard ». Il doit être en dossier local : un Standard lu sur
-     Bitbucket (non cloné) est refusé (`verifier_standard`).
+     la page, sinon celle dont le nom contient « standard » (`verifier_standard`), en dossier local ou sur
+     Bitbucket.
+     Variante `inventorier_bitbucket` (0 token, mêmes structures de sortie), dès qu'une source est un dépôt ou un
+     projet Bitbucket (`sur_bitbucket`) : AUCUNE source n'est alors clonée pour la synthèse (sessions des lots avec
+     `sources.locales()` seulement). Code lu par l'API (GET seulement, via `bitbucket._get`, `_pages`,
+     `contenu_brut`) : dépôts du projet ou dépôt indiqué, `/files` paginé, `/raw` pour comparer et chercher les
+     tickets, `/commits?until=` pour le commit ; surcharge = même dépôt et même chemin au contenu différent, même
+     nom de classe sous `src/main` dans un dépôt du Standard, ou Studio. Branche du Standard : celle de la source,
+     sinon `v<version>` d'après les `pom.xml` du spécifique, sinon branche par défaut. Plafonds en réglages
+     (`synthese_depots`, `synthese_comparaisons`, `synthese_lectures`), 8 appels parallèles, délai par requête
+     (`BB_PARALLELE`, `BB_DELAI`) ; dépassements et dépôts en erreur dans `limites` (points à vérifier et
+     couverture). Chaque élément porte `depot` et `branche` ; `SYNTHESE_LOT` fait lire avec `bitbucket_lire` et
+     citer « dépôt:chemin:ligne ». Essai sur un profil client réel (2026-11-20) : 188 dépôts, 4 224 comparés,
+     9 306 appels, 83 s, 100 éléments.
   2. Une session NEUVE par lot (`Reglages.synthese_lot`), puis une session finale : `Session(synthese={...})`,
      outils de lecture + `synthese_demarrer` / `synthese_enregistrer` seulement, plafonds
      `requetes_base_synthese` et `synthese_max_tours`, bloc `SYNTHESE` ajouté au prompt système ; marches à
@@ -205,6 +217,7 @@ avant et après la modification dans la PR.
 | Navigation : seule l'application du projet (ou une adresse locale) peut être ouverte ; clics d'écriture refusés d'après le libellé, sauf en mode actions ; mot de passe saisi par l'outil ; 20 captures au plus | `ecran.py`, `_ECRITURE`, `_ECRITURE_LIEN` |
 | Bitbucket en lecture seule, projets autorisés, fichiers interdits jamais montrés, réponses bornées | `bitbucket.py` |
 | Standard jamais cloné : une source `depot` dont le nom contient « standard » n'est pas copiée, l'agent la lit sur Bitbucket | `sources.py`, `distantes()`, `preparer()` |
+| Synthèse sur Bitbucket : aucune source `depot` clonée ; inventaire en GET seulement, fichiers interdits du profil jamais lus, projets autorisés respectés, plafonds de dépôts, de fichiers comparés et de fichiers lus, tout dépassement ou dépôt en erreur reporté dans le rapport ; rien n'est écrit hors de `.cache/synthese/` | `synthese.py`, `inventorier_bitbucket()` ; `bitbucket.py`, `contenu_brut()` |
 | Secrets retirés de l'environnement, posés le temps d'un appel et masqués dans les résultats | `config.py`, `outils._environnement`, `tools/secret_tools.py` |
 | Journal des accès sans texte de requête ni données | `outils.journal` → `.cache/journal/outils.jsonl` |
 

@@ -85,8 +85,8 @@ class Session:
             mcp_servers={SERVEUR: create_sdk_mcp_server(SERVEUR, tools=outils_maison)} if outils_maison else {},
             strict_mcp_config=True,                       # ignore les serveurs MCP configurés sur le poste
             setting_sources=[],                           # ignore les réglages et CLAUDE.md du poste
-            cwd=str(racines[0]),
-            add_dirs=[str(r) for r in racines[1:]] + [str(sortie)],
+            cwd=str(racines[0] if racines else sortie),   # aucune source locale : synthèse lue sur Bitbucket
+            add_dirs=[str(r) for r in racines[1:]] + ([str(sortie)] if racines else []),
             hooks={"PreToolUse": [HookMatcher(matcher="Read|Grep|Glob",
                                               hooks=[creer_garde(racines, profil.fichiers_interdits, sortie)])]},
             max_turns=(reglages.synthese_max_tours if synthese else reglages.max_tours) or None,
