@@ -123,7 +123,9 @@ def _onglet_projets() -> None:
                 "chemin": st.column_config.TextColumn("Dossier local", help="Ex. C:/development/branch_dev", width="large"),
                 "depot": st.column_config.TextColumn("Dépôt Git", help="Adresse de clonage (…/scm/…/….git) ou adresse de la page du dépôt dans Bitbucket "
                                                      "(…/projects/…/repos/…) : elle est convertie. L'adresse d'un projet "
-                                                     "(…/projects/PROJ) donne tous ses dépôts.", width="large"),
+                                                     "(…/projects/PROJ) donne tous ses dépôts. Une source dont le nom "
+                                                     "contient « standard » n'est jamais clonée : l'agent la lit sur "
+                                                     "Bitbucket.", width="large"),
                 "branche": st.column_config.TextColumn("Branche", help="Pour un dépôt Git ; vide = branche par défaut"),
             })
 
@@ -319,8 +321,14 @@ def _onglet_projets() -> None:
         if tester:
             with st.spinner("Test des connexions…"):
                 profil = config.charger_profil(nom)
+                a_distance = sources.distantes(profil)
                 for s in profil.sources:
-                    if s.chemin:
+                    if s in a_distance:
+                        try:
+                            resultats.append((f"Source {s.nom}", True, sources.verifier_distante(profil, s)))
+                        except sources.SourceError as e:
+                            resultats.append((f"Source {s.nom}", False, str(e)))
+                    elif s.chemin:
                         ok = Path(s.chemin).expanduser().is_dir()
                         resultats.append((f"Source {s.nom}", ok, "dossier trouvé" if ok else "dossier introuvable"))
                     else:

@@ -153,6 +153,30 @@ def depots_du_projet(profil, projet: str) -> list:
     return sorted(resultat)
 
 
+def cible(url: str) -> str:
+    """« projet PROJ » ou « dépôt PROJ/depot » d'une adresse Bitbucket ; "" si elle n'en désigne aucun."""
+    projet = projet_depuis_url(url)
+    if projet:
+        return f"projet {projet}"
+    depot = _depuis_url(url or "")
+    return f"dépôt {depot[0]}/{depot[1]}" if depot else ""
+
+
+def acces(profil, url: str) -> str:
+    """Vérifie que le projet ou le dépôt d'une adresse est lisible avec le jeton ; renvoie un constat court."""
+    projet = projet_depuis_url(url)
+    if projet:
+        return f"projet {projet} : {len(depots_du_projet(profil, projet))} dépôt(s) lisible(s)"
+    depot = _depuis_url(url or "")
+    if not depot:
+        raise BitbucketErreur("adresse qui ne désigne ni un projet ni un dépôt Bitbucket.")
+    autorises = projets_autorises()
+    if autorises and depot[0] not in autorises:
+        raise BitbucketErreur(f"Projet Bitbucket {depot[0]} non autorisé (autorisés : {', '.join(sorted(autorises))}).")
+    _get(profil, _chemin_depot(*depot))
+    return f"dépôt {depot[0]}/{depot[1]} lisible"
+
+
 def _depuis_url(url: str) -> tuple | None:
     """(PROJET, depot) d'une URL de clone (…/scm/PROJ/depot.git) ou de navigation (…/projects/PROJ/repos/depot)."""
     m = re.search(r"/scm/([^/]+)/([^/]+?)(?:\.git)?/?$", url) \

@@ -94,6 +94,23 @@ def source_standard(sources: list) -> str:
     return next((nom for nom, _ in sources if "standard" in nom.lower()), "")
 
 
+STANDARD_DISTANT = ("La source Standard « {nom} » n'est pas clonée (l'agent la lit sur Bitbucket) : la synthèse "
+                    "compare les fichiers du spécifique à ceux du Standard et a besoin d'une copie locale. Ajoute au "
+                    "projet une source Standard en dossier local (ex. C:/development/branch_dev) et choisis-la.")
+
+
+def verifier_standard(profil, standard: str = "") -> str:
+    """Nom de la source Standard retenue pour la synthèse ; SyntheseErreur si c'est un Standard non cloné."""
+    from . import sources as depots
+    nom = standard or source_standard([(s.nom, "") for s in profil.sources if s.chemin or s.depot])
+    if any(s.nom == nom for s in depots.distantes(profil)):
+        locale = next((s.nom for s in profil.sources if s.chemin and "standard" in s.nom.lower()), "")
+        if standard or not locale:
+            raise SyntheseErreur(STANDARD_DISTANT.format(nom=nom))
+        nom = locale
+    return nom
+
+
 def _ignore(chemin: str) -> bool:
     nom = chemin.rsplit("/", 1)[-1].lower()
     return any(fnmatch.fnmatchcase(nom, g) for g in FICHIERS_IGNORES)

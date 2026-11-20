@@ -35,7 +35,9 @@ class AdresseDeProjet(unittest.TestCase):
                 bitbucket.depots_du_projet(None, "CLIENTX")
 
 
-class SourceProjet(AvecDossierTemporaire):
+class GitSimule(AvecDossierTemporaire):
+    """Git et Bitbucket simulés (aucun test ici)."""
+
     def setUp(self):
         super().setUp()
         self.depots = [("app", "https://git.exemple.test/scm/clientx/app.git"),
@@ -63,6 +65,8 @@ class SourceProjet(AvecDossierTemporaire):
     def profil_projet(self, branche=""):
         return self.profil(sources=[config.Source(nom="client", depot=PROJET, branche=branche)])
 
+
+class SourceProjet(GitSimule):
     def test_tous_les_depots_clones_dans_la_source(self):
         prets = sources.preparer(self.profil_projet(), journal=lambda _: None)
         dossier = self.cache / "sources" / "essai" / "client"
@@ -124,6 +128,82 @@ class SourceProjet(AvecDossierTemporaire):
         self.assertEqual(prets, [("app", (self.cache / "sources" / "essai" / "app").resolve())])
         self.assertEqual([a[0] for a in self.appels], ["clone"])
         bitbucket.depots_du_projet.assert_not_called()
+
+
+class StandardSurBitbucket(GitSimule):
+    """Le Standard donné par un dépôt ou un projet n'est jamais cloné : l'agent le lit sur Bitbucket."""
+
+    def profil_mixte(self, standard_local=False):
+        std = (config.Source(nom="Standard", chemin=str(self.source)) if standard_local
+               else config.Source(nom="Standard", depot="https://git.exemple.test/projects/SOCLE", branche="dev"))
+        return self.profil(sources=[config.Source(nom="client", depot=PROJET), std])
+
+    def test_standard_jamais_clone(self):
+        prets = sources.preparer(self.profil_mixte(), journal=lambda _: None)
+        self.assertEqual([n for n, _ in prets], ["client"])
+        self.assertFalse((self.cache / "sources" / "essai" / "Standard").exists())
+        bitbucket.depots_du_projet.assert_called_once_with(mock.ANY, "CLIENTX")    # jamais SOCLE
+        self.assertEqual([s.nom for s in sources.distantes(self.profil_mixte())], ["Standard"])
+
+    def test_standard_local_lu_tel_quel(self):
+        profil = self.profil_mixte(standard_local=True)
+        self.assertEqual(sources.distantes(profil), [])
+        self.assertIn(("Standard", self.source), sources.preparer(profil, journal=lambda _: None))
+
+    def test_depot_standard_seul_non_clone(self):
+        profil = self.profil(sources=[config.Source(nom="odatio-standard",
+                                                    depot="https://git.exemple.test/scm/socle/standard.git")])
+        self.assertEqual(sources.preparer(profil, journal=lambda _: None), [])
+        self.assertEqual(self.appels, [])
+
+    def test_verification_d_acces(self):
+        profil, std = self.profil_mixte(), self.profil_mixte().sources[1]
+        with mock.patch.object(bitbucket, "configure", return_value=True), \
+                mock.patch.object(bitbucket, "acces", return_value="projet SOCLE : 3 dépôt(s) lisible(s)"):
+            self.assertIn("non clonée", sources.verifier_distante(profil, std))
+        with mock.patch.object(bitbucket, "configure", return_value=False):
+            with self.assertRaisesRegex(sources.SourceError, "pas configuré"):
+                sources.verifier_distante(profil, std)
+
+    def test_prompt(self):
+        from odatio_agent import consignes
+        with mock.patch.object(bitbucket, "configure", return_value=True), \
+                mock.patch.object(bitbucket, "adresse", return_value="https://git.exemple.test"):
+            texte = consignes.construire(self.profil_mixte(), [("client", "C:/x/client")], [], "essai",
+                                         config.Reglages())
+            self.assertIn("Standard, lu sur Bitbucket uniquement", texte)
+            self.assertIn("- Standard : projet SOCLE, branche dev", texte)
+            self.assertIn("Le Standard fait exception", texte)
+            self.assertIn("Plusieurs sources", texte)
+            local = consignes.construire(self.profil_mixte(standard_local=True),
+                                         [("client", "C:/x/client"), ("Standard", "C:/x/std")], [], "essai",
+                                         config.Reglages())
+            self.assertNotIn("lu sur Bitbucket uniquement", local)
+            self.assertNotIn("Le Standard fait exception", local)
+        with mock.patch.object(bitbucket, "configure", return_value=False):
+            texte = consignes.construire(self.profil_mixte(), [("client", "C:/x/client")], [], "essai",
+                                         config.Reglages())
+            self.assertIn("INDISPONIBLE", texte)
+
+    def test_synthese_refusee_sans_standard_local(self):
+        from odatio_agent import synthese
+        with self.assertRaisesRegex(synthese.SyntheseErreur, "copie locale"):
+            synthese.verifier_standard(self.profil_mixte())
+        with self.assertRaises(synthese.SyntheseErreur):
+            synthese.verifier_standard(self.profil_mixte(), "Standard")
+        self.assertEqual(synthese.verifier_standard(self.profil_mixte(standard_local=True)), "Standard")
+
+
+class AccesBitbucket(unittest.TestCase):
+    def test_cible(self):
+        self.assertEqual(bitbucket.cible(PROJET), "projet CLIENTX")
+        self.assertEqual(bitbucket.cible("https://git.exemple.test/scm/clientx/app.git"), "dépôt CLIENTX/app")
+        self.assertEqual(bitbucket.cible("C:/dossier"), "")
+
+    def test_depot_non_autorise(self):
+        with mock.patch.object(bitbucket, "projets_autorises", return_value={"AUTRE"}):
+            with self.assertRaisesRegex(bitbucket.BitbucketErreur, "non autorisé"):
+                bitbucket.acces(None, "https://git.exemple.test/scm/clientx/app.git")
 
 
 if __name__ == "__main__":
