@@ -28,15 +28,20 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 import unicodedata
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
+
+import requests
 
 from tools.secret_tools import remaining_secrets
 
-from . import config
+from . import bitbucket, config
 from .documentation import _EMAIL, _SECRET_EN_CLAIR, _TELEPHONE
 
 SECTIONS = ("Identité et contexte", "Développements spécifiques", "Configuration en place",
@@ -94,21 +99,12 @@ def source_standard(sources: list) -> str:
     return next((nom for nom, _ in sources if "standard" in nom.lower()), "")
 
 
-STANDARD_DISTANT = ("La source Standard « {nom} » n'est pas clonée (l'agent la lit sur Bitbucket) : la synthèse "
-                    "compare les fichiers du spécifique à ceux du Standard et a besoin d'une copie locale. Ajoute au "
-                    "projet une source Standard en dossier local (ex. C:/development/branch_dev) et choisis-la.")
-
-
 def verifier_standard(profil, standard: str = "") -> str:
-    """Nom de la source Standard retenue pour la synthèse ; SyntheseErreur si c'est un Standard non cloné."""
-    from . import sources as depots
-    nom = standard or source_standard([(s.nom, "") for s in profil.sources if s.chemin or s.depot])
-    if any(s.nom == nom for s in depots.distantes(profil)):
-        locale = next((s.nom for s in profil.sources if s.chemin and "standard" in s.nom.lower()), "")
-        if standard or not locale:
-            raise SyntheseErreur(STANDARD_DISTANT.format(nom=nom))
-        nom = locale
-    return nom
+    """Nom de la source Standard retenue pour la synthèse (choisie, sinon déduite du nom) : dossier local ou
+    source Bitbucket, lue sans être clonée. SyntheseErreur si le nom choisi n'est pas une source du projet."""
+    if standard and not any(s.nom == standard for s in profil.sources):
+        raise SyntheseErreur(f"Source Standard « {standard} » inconnue dans ce projet.")
+    return standard or source_standard([(s.nom, "") for s in profil.sources if s.chemin or s.depot])
 
 
 def _ignore(chemin: str) -> bool:
@@ -202,13 +198,17 @@ def unite(chemin: str) -> str:
     return module or _cle_metier(parties[:-1])
 
 
+def _tickets_texte(texte: str) -> list:
+    return [f"{p}-{n}" for p, n in TICKET.findall(texte) if p not in FAUX_TICKETS and not p.startswith("X")]
+
+
 def _tickets(fichier: Path) -> list:
     try:
         with open(fichier, "rb") as f:
             texte = f.read(TAILLE_LECTURE).decode("utf-8", errors="ignore")
     except OSError:
         return []
-    return [f"{p}-{n}" for p, n in TICKET.findall(texte) if p not in FAUX_TICKETS and not p.startswith("X")]
+    return _tickets_texte(texte)
 
 
 # --- version du Standard (pom.xml) ------------------------------------------------------------------------------
@@ -242,16 +242,52 @@ def _poms(racine: Path, profondeur: int = 3) -> list:
                   and not set(p.relative_to(racine).parts) & DOSSIERS_IGNORES)
 
 
-def groupes_standard(racine: Path) -> set:
-    """groupIds du Standard : ceux de ses pom.xml (racine et modules), jamais en dur."""
+def _groupes(poms) -> set:
+    """groupIds déclarés par des pom.xml déjà lus (racines XML)."""
     groupes = set()
-    for fichier in _poms(racine, 2):
-        racine_pom = _pom(fichier)
+    for racine_pom in poms:
         if racine_pom is not None:
             groupe = _texte(racine_pom, "groupId") or _texte(_enfant(racine_pom, "parent"), "groupId")
             if groupe:
                 groupes.add(groupe)
     return groupes
+
+
+def groupes_standard(racine: Path) -> set:
+    """groupIds du Standard : ceux de ses pom.xml (racine et modules), jamais en dur."""
+    return _groupes(_pom(f) for f in _poms(racine, 2))
+
+
+def _citations(relatif: str, pom, groupes: set) -> list:
+    """Versions d'artefacts du Standard citées par un pom.xml lu (propriétés ${…} résolues)."""
+    trouvees = []
+    proprietes = _enfant(pom, "properties")
+    props = {_balise(p): (p.text or "").strip() for p in (proprietes if proprietes is not None else [])}
+
+    def ajouter(noeud, emplacement: str) -> None:
+        groupe, artefact = _texte(noeud, "groupId"), _texte(noeud, "artifactId")
+        if not any(groupe == g or groupe.startswith(g + ".") for g in groupes):
+            return
+        brute = _texte(noeud, "version")
+        noms = _PROPRIETE.findall(brute)
+        for _ in range(5):
+            brute = _PROPRIETE.sub(lambda m: props.get(m.group(1), m.group(0)), brute)
+        m = _VERSION.search(brute)
+        if m:
+            trouvees.append({"version": f"{m.group(1)}.{m.group(2)}", "complete": brute, "emplacement": emplacement,
+                             "artefact": f"{groupe}:{artefact}",
+                             "fichier": relatif + (f" (propriété {noms[0]})" if noms else "")})
+
+    if _enfant(pom, "parent") is not None:
+        ajouter(_enfant(pom, "parent"), "parent")
+    for portee in [pom] + list(_enfant(pom, "profiles") if _enfant(pom, "profiles") is not None else []):
+        gestion = _enfant(_enfant(portee, "dependencyManagement"), "dependencies")
+        for dep in gestion if gestion is not None else []:
+            ajouter(dep, "bom" if _texte(dep, "scope") == "import" else "dépendance")
+        deps = _enfant(portee, "dependencies")
+        for dep in deps if deps is not None else []:
+            ajouter(dep, "dépendance")
+    return trouvees
 
 
 def versions_standard(nom_source: str, racine: Path, groupes: set) -> list:
@@ -260,46 +296,14 @@ def versions_standard(nom_source: str, racine: Path, groupes: set) -> list:
     trouvees = []
     for fichier in _poms(racine):
         pom = _pom(fichier)
-        if pom is None:
-            continue
-        proprietes = _enfant(pom, "properties")
-        props = {_balise(p): (p.text or "").strip() for p in (proprietes if proprietes is not None else [])}
-        relatif = f"{nom_source}/{fichier.relative_to(racine).as_posix()}"
-
-        def ajouter(noeud, emplacement: str) -> None:
-            groupe, artefact = _texte(noeud, "groupId"), _texte(noeud, "artifactId")
-            if not any(groupe == g or groupe.startswith(g + ".") for g in groupes):
-                return
-            brute = _texte(noeud, "version")
-            noms = _PROPRIETE.findall(brute)
-            for _ in range(5):
-                brute = _PROPRIETE.sub(lambda m: props.get(m.group(1), m.group(0)), brute)
-            m = _VERSION.search(brute)
-            if m:
-                trouvees.append({"version": f"{m.group(1)}.{m.group(2)}", "complete": brute, "emplacement": emplacement,
-                                 "artefact": f"{groupe}:{artefact}",
-                                 "fichier": relatif + (f" (propriété {noms[0]})" if noms else "")})
-
-        if _enfant(pom, "parent") is not None:
-            ajouter(_enfant(pom, "parent"), "parent")
-        for portee in [pom] + list(_enfant(pom, "profiles") if _enfant(pom, "profiles") is not None else []):
-            gestion = _enfant(_enfant(portee, "dependencyManagement"), "dependencies")
-            for dep in gestion if gestion is not None else []:
-                ajouter(dep, "bom" if _texte(dep, "scope") == "import" else "dépendance")
-            deps = _enfant(portee, "dependencies")
-            for dep in deps if deps is not None else []:
-                ajouter(dep, "dépendance")
+        if pom is not None:
+            trouvees += _citations(f"{nom_source}/{fichier.relative_to(racine).as_posix()}", pom, groupes)
     return trouvees
 
 
-def version(standard: tuple | None, specifiques: list) -> dict:
-    """Version du Standard déployée : la plus citée par les pom.xml des sources spécifiques (parent d'abord) ;
-    à défaut, celle du pom.xml de la source Standard (branche suivie par le profil). {} si introuvable."""
-    if standard is None:
-        return {}
-    nom_std, racine_std = standard
-    groupes = groupes_standard(racine_std)
-    citees = [v for nom, racine in specifiques for v in versions_standard(nom, racine, groupes)]
+def _version_retenue(groupes: set, citees: list, poms_standard: list) -> dict:
+    """La plus citée par les pom.xml du spécifique (parent d'abord) ; à défaut, celle des pom.xml du Standard
+    ([(libellé, racine XML)], branche lue), la plus fréquente. {groupes, citations} si introuvable."""
     resultat = {"groupes": sorted(groupes), "citations": citees[:20]}
     if citees:
         comptes = {}
@@ -312,13 +316,32 @@ def version(standard: tuple | None, specifiques: list) -> dict:
                         detail=f"{preuve['artefact']} ({preuve['emplacement']})",
                         divergentes=sorted(set(comptes) - {retenue}))
         return resultat
-    pom = _pom(racine_std / "pom.xml")
-    brute = (_texte(pom, "version") or _texte(_enfant(pom, "parent"), "version")) if pom is not None else ""
-    m = _VERSION.search(brute)
-    if m:
-        resultat.update(version=f"{m.group(1)}.{m.group(2)}", complete=brute, source=f"{nom_std}/pom.xml",
+    trouvees = []
+    for libelle, pom in poms_standard:
+        brute = (_texte(pom, "version") or _texte(_enfant(pom, "parent"), "version")) if pom is not None else ""
+        m = _VERSION.search(brute)
+        if m:
+            trouvees.append((f"{m.group(1)}.{m.group(2)}", brute, libelle))
+    if trouvees:
+        comptes = {}
+        for v, _, _ in trouvees:
+            comptes[v] = comptes.get(v, 0) + 1
+        retenue = max(comptes, key=lambda v: (comptes[v], v))
+        _, brute, libelle = next(x for x in trouvees if x[0] == retenue)
+        resultat.update(version=retenue, complete=brute, source=libelle,
                         detail="version du pom de la source Standard (pas citée par le spécifique)", divergentes=[])
     return resultat
+
+
+def version(standard: tuple | None, specifiques: list) -> dict:
+    """Version du Standard déployée : la plus citée par les pom.xml des sources spécifiques (parent d'abord) ;
+    à défaut, celle du pom.xml de la source Standard (branche suivie par le profil). {} si introuvable."""
+    if standard is None:
+        return {}
+    nom_std, racine_std = standard
+    groupes = groupes_standard(racine_std)
+    citees = [v for nom, racine in specifiques for v in versions_standard(nom, racine, groupes)]
+    return _version_retenue(groupes, citees, [(f"{nom_std}/pom.xml", _pom(racine_std / "pom.xml"))])
 
 
 def inventorier(projet: str, sources: list, standard: str = "") -> dict:
@@ -394,6 +417,516 @@ def inventorier(projet: str, sources: list, standard: str = "") -> dict:
             "standard": {"source": std[0], **_git_info(std[1])} if std else {}, "specifiques": references,
             "version": version(std, specifiques), "elements": elements, "fichiers_identiques": identiques,
             "limites": limites}
+
+
+# ---------------------------------------------------------------------------
+# Inventaire lu sur Bitbucket (0 token, sans clonage)
+# ---------------------------------------------------------------------------
+
+BB_PARALLELE = 8                # appels Bitbucket simultanés au plus
+BB_DELAI = 20                   # secondes au plus par requête Bitbucket
+TAILLE_COMPARAISON = 5_000_000  # octets lus au plus par fichier comparé
+PROGRESSION = 250               # une ligne de progression toutes les N opérations
+_PRIORITE_LECTURE = (".java", ".kt", ".groovy", ".xml", ".sql", ".properties", ".yml", ".yaml", ".ts", ".js",
+                     ".html", ".json", ".txt", ".csv")
+
+
+def sur_bitbucket(profil) -> bool:
+    """La synthèse de ce profil lit-elle ses sources sur Bitbucket ? Oui dès qu'une source est un dépôt ou un
+    projet Bitbucket : ces sources ne sont alors jamais clonées pour la synthèse."""
+    from . import sources as depots
+    return bool(depots.lues_sur_bitbucket(profil))
+
+
+class _Lecteur:
+    """Appels Bitbucket de l'inventaire : comptés, délai par requête, connexions réutilisées (une session HTTP
+    par fil), parallélisme borné."""
+
+    def __init__(self, profil, delai: float = BB_DELAI, parallele: int = BB_PARALLELE):
+        self.profil, self.delai, self.parallele = profil, delai, max(1, int(parallele))
+        self.appels = 0
+        self._verrou = threading.Lock()
+        self._local = threading.local()
+        self._sessions = []
+
+    def _session(self):
+        if getattr(self._local, "session", None) is None:
+            self._local.session = requests.Session()
+            with self._verrou:
+                self._sessions.append(self._local.session)
+        return self._local.session
+
+    def get(self, profil, chemin: str, params: dict | None = None, brut: bool = False, flux: bool = False):
+        with self._verrou:
+            self.appels += 1
+        return bitbucket._get(self.profil, chemin, params, brut=brut, delai=self.delai, session=self._session(),
+                              flux=flux)
+
+    def pages(self, chemin: str, params: dict | None = None, maximum: int = 500, taille: int = 100) -> list:
+        return bitbucket._pages(self.profil, chemin, params, maximum=maximum, taille=taille, get=self.get)
+
+    def brut(self, projet: str, depot: str, chemin: str, branche: str, maximum: int) -> tuple:
+        return bitbucket.contenu_brut(self.profil, projet, depot, chemin, branche, maximum, get=self.get)
+
+    def en_parallele(self, fonction, elements: list, sur_avance=None) -> list:
+        """[(élément, résultat ou exception)] dans l'ordre des éléments ; ``sur_avance(faits, total)`` est appelé
+        dans le fil principal (Streamlit peut y interrompre : les appels en attente sont alors annulés)."""
+        if not elements:
+            return []
+        resultats = [None] * len(elements)
+        executeur = ThreadPoolExecutor(max_workers=self.parallele)
+        try:
+            futurs = {executeur.submit(fonction, e): i for i, e in enumerate(elements)}
+            for faits, futur in enumerate(as_completed(futurs), start=1):
+                i = futurs[futur]
+                try:
+                    resultats[i] = (elements[i], futur.result())
+                except Exception as e:     # BitbucketErreur, fichier illisible… : noté par l'appelant
+                    resultats[i] = (elements[i], e)
+                if sur_avance and (faits % PROGRESSION == 0 or faits == len(elements)):
+                    sur_avance(faits, len(elements))
+        finally:
+            executeur.shutdown(wait=False, cancel_futures=True)
+        return resultats
+
+    def fermer(self) -> None:
+        for s in self._sessions:
+            s.close()
+
+
+class _Depot:
+    """Un dépôt lu pendant l'inventaire : Bitbucket (projet, slug, branche) ou dossier local (racine)."""
+
+    def __init__(self, source: str, projet: str = "", slug: str = "", voulue: str = "", racine: Path | None = None):
+        self.source, self.projet, self.slug, self.voulue, self.racine = source, projet, slug, voulue, racine
+        self.depot = f"{projet}/{slug}" if projet else ""
+        self.branche, self.commit, self.date, self.erreur = "", "", "", ""
+        self.repli = False           # branche voulue absente : branche par défaut lue
+        self.fichiers, self.poms, self.interdits, self.tronque = [], [], 0, False
+
+    @property
+    def libelle(self) -> str:
+        return self.depot or self.source
+
+    def info(self) -> dict:
+        if self.racine is not None:
+            return {"source": self.source, **_git_info(self.racine)}
+        return {k: v for k, v in (("depot", self.depot), ("branche", self.branche), ("commit", self.commit),
+                                  ("date", self.date), ("erreur", self.erreur)) if v}
+
+    def lire(self, lecteur: _Lecteur, chemin: str, maximum: int) -> bytes:
+        if self.racine is not None:
+            with open(self.racine / chemin, "rb") as f:
+                return f.read(maximum)
+        return lecteur.brut(self.projet, self.slug, chemin, self.branche, maximum)[0]
+
+    def reference(self, chemin: str) -> str:
+        """Où lire un fichier : « PROJET/depot:chemin » sur Bitbucket, « source/chemin » en local."""
+        return f"{self.depot}:{chemin}" if self.depot else f"{self.source}/{chemin}"
+
+    def reference_lue(self, chemin: str) -> str:
+        """Référence avec la branche lue (« PROJET/depot:chemin @ branche ») : fichier d'un autre dépôt."""
+        return self.reference(chemin) + (f" @ {self.branche}" if self.depot and self.branche else "")
+
+
+def _garder(chemin: str) -> bool:
+    """Mêmes exclusions que l'inventaire local : dossiers techniques ou cachés, fichiers techniques."""
+    parties = chemin.split("/")
+    return not any(p in DOSSIERS_IGNORES or p.startswith(".") for p in parties[:-1]) and not _ignore(chemin)
+
+
+def _depots_bitbucket(lecteur: _Lecteur, profil, source) -> list:
+    """[(PROJET, slug)] d'une source : tous les dépôts d'un projet, ou le dépôt indiqué."""
+    projet = bitbucket.projet_depuis_url(source.depot)
+    if projet:
+        autorises = bitbucket.projets_autorises()
+        if autorises and projet not in autorises:
+            raise bitbucket.BitbucketErreur(f"Projet Bitbucket {projet} non autorisé.")
+        return sorted((projet, v["slug"]) for v in lecteur.pages(f"{bitbucket.API}/projects/{quote(projet)}/repos",
+                                                                 maximum=1000))
+    p, d, _ = bitbucket.resoudre(profil, source.nom)
+    return [(p, d)]
+
+
+def _preparer_depot(lecteur: _Lecteur, d: _Depot, candidates: list, limite: int) -> _Depot:
+    """Branche (première candidate présente, sinon branche par défaut), dernier commit et liste des fichiers."""
+    if d.racine is not None:
+        tous, d.tronque = _fichiers(d.racine, limite)
+        d.fichiers = [c for c in tous if not bitbucket._interdit(c, lecteur.profil)]
+        d.interdits = len(tous) - len(d.fichiers)
+        d.poms = [p.relative_to(d.racine).as_posix() for p in _poms(d.racine)]
+        return d
+    base = bitbucket._chemin_depot(d.projet, d.slug)
+    voulues = [b for b in candidates if b]
+    commit = None
+    for branche in voulues:
+        try:
+            commit = lecteur.get(None, base + "/commits", {"until": bitbucket._ref(branche), "limit": 1})
+            d.branche = branche
+            break
+        except bitbucket.BitbucketErreur:
+            continue
+    if commit is None:
+        d.repli = bool(voulues)
+        try:
+            reponse = lecteur.get(None, base + "/branches/default", brut=True)
+        except bitbucket.BitbucketErreur as e:
+            d.erreur = f"branche par défaut introuvable : {e}"
+            return d
+        try:     # dépôt vide : Bitbucket répond 204, sans contenu
+            d.branche = reponse.json().get("displayId", "") if reponse.status_code != 204 and reponse.content else ""
+        except ValueError:
+            d.branche = ""
+        if not d.branche:
+            d.erreur = "dépôt vide"
+            return d
+        commit = lecteur.get(None, base + "/commits", {"until": bitbucket._ref(d.branche), "limit": 1})
+    valeurs = commit.get("values") or []
+    if not valeurs:
+        d.erreur = "dépôt vide"
+        return d
+    d.commit = str(valeurs[0].get("id") or valeurs[0].get("displayId") or "")[:12]
+    quand = valeurs[0].get("committerTimestamp") or valeurs[0].get("authorTimestamp")
+    if quand:
+        d.date = datetime.fromtimestamp(int(quand) / 1000).isoformat(timespec="seconds")
+    tous = lecteur.pages(base + "/files", {"at": bitbucket._ref(d.branche)}, maximum=limite + 1, taille=1000)
+    d.tronque = len(tous) > limite
+    tous = tous[:limite]
+    d.poms = [c for c in tous if c.rsplit("/", 1)[-1] == "pom.xml" and c.count("/") <= 2      # comme _poms
+              and not any(p in DOSSIERS_IGNORES or p.startswith(".") for p in c.split("/")[:-1])]
+    for chemin in tous:
+        if not _garder(chemin):
+            continue
+        if bitbucket._interdit(chemin, lecteur.profil):
+            d.interdits += 1
+            continue
+        d.fichiers.append(chemin)
+    return d
+
+
+def _xml(octets: bytes):
+    try:
+        return ET.fromstring(octets)
+    except ET.ParseError:
+        return None
+
+
+def inventorier_bitbucket(profil, standard: str = "", reglages=None, sur_etape=lambda texte: None) -> dict:
+    """Inventaire des éléments spécifiques quand des sources du profil sont des dépôts ou projets Bitbucket : le
+    code est lu par l'API (liste des fichiers, contenu brut), SANS cloner, sans appel au modèle. Mêmes structures
+    de sortie que ``inventorier`` ; chaque élément porte en plus son dépôt et sa branche, et l'inventaire le
+    nombre d'appels et la durée (« bitbucket »).
+
+    Surcharge : même dépôt et même chemin que le Standard au contenu différent (fins de ligne normalisées ;
+    identique = ignoré), même nom de classe Java ou Kotlin sous src/main dans un dépôt du Standard, ou
+    customized.* avec original.* (Studio) ; sinon ajout ; paramétrage à part. Branche du Standard : celle de la
+    source, sinon « v<version> » d'après les pom.xml du spécifique, sinon la branche par défaut de chaque dépôt.
+    Plafonds (Reglages.synthese_depots, synthese_comparaisons, synthese_lectures), dépassements et erreurs de
+    dépôt : notés dans « limites », jamais ignorés. Une source en dossier local est lue telle quelle. Rien n'est
+    écrit : l'appelant enregistre l'inventaire (``creer``)."""
+    from . import sources as depots
+    reglages = reglages or config.reglages()
+    if not bitbucket.configure(profil):
+        raise SyntheseErreur("Les sources de ce projet sont sur Bitbucket, mais Bitbucket n'est pas configuré "
+                             "(jeton dans la page Configuration, Accès).")
+    debut = time.monotonic()
+    standard = verifier_standard(profil, standard)
+    lecteur = _Lecteur(profil)
+    limites = []
+    try:
+        # 1. Dépôts : spécifiques d'abord, pour que le plafond écarte plutôt des dépôts du Standard
+        sur_etape("Inventaire Bitbucket : liste des dépôts…")
+        dep_std, dep_spe, ecartes = [], [], []
+        for s in sorted(profil.sources, key=lambda s: s.nom == standard):
+            cible = dep_std if s.nom == standard else dep_spe
+            if s.chemin:
+                try:
+                    cible.append(_Depot(s.nom, racine=dict(depots.locales(config.Profil(nom=profil.nom,
+                                                                                         sources=[s])))[s.nom]))
+                except depots.SourceError as e:
+                    limites.append(f"Source {s.nom} : {e} ; aucun de ses fichiers n'est inventorié.")
+                continue
+            if not s.depot:
+                continue
+            try:
+                trouves = _depots_bitbucket(lecteur, profil, s)
+            except bitbucket.BitbucketErreur as e:
+                limites.append(f"Source {s.nom} : illisible sur Bitbucket ({e}) ; aucun de ses fichiers n'est "
+                               "inventorié.")
+                continue
+            for projet, slug in trouves:
+                if len(dep_std) + len(dep_spe) >= reglages.synthese_depots:
+                    ecartes.append(f"{projet}/{slug}")
+                    continue
+                cible.append(_Depot(s.nom, projet, slug, s.branche))
+        if ecartes:
+            limites.append(f"Plafond de {reglages.synthese_depots} dépôts atteint : {len(ecartes)} dépôt(s) non "
+                           f"parcouru(s) ({', '.join(ecartes[:8])}{'…' if len(ecartes) > 8 else ''}).")
+        if not dep_spe:
+            raise SyntheseErreur("Le profil n'a aucune source spécifique lisible (seulement le Standard) : rien à "
+                                 "inventorier." + (f" {limites[0]}" if limites else ""))
+        if not dep_std:
+            limites.append("Aucune source Standard lisible : impossible de distinguer surcharges et ajouts ; tous "
+                           "les fichiers des sources sont traités comme spécifiques.")
+
+        def avance(libelle):
+            return lambda faits, total: sur_etape(f"Inventaire Bitbucket : {libelle} {faits}/{total}…")
+
+        # 2. Dépôts spécifiques : branche, commit, fichiers
+        sur_etape(f"Inventaire Bitbucket : {len(dep_spe)} dépôt(s) spécifique(s)…")
+        for d, r in lecteur.en_parallele(lambda d: _preparer_depot(lecteur, d, [d.voulue], FICHIERS_MAX), dep_spe,
+                                         avance("dépôts spécifiques")):
+            if isinstance(r, Exception):
+                d.erreur = str(r) or type(r).__name__
+
+        # 3. groupIds du Standard (pom.xml à la racine de chaque dépôt), puis version citée par le spécifique
+        sur_etape(f"Inventaire Bitbucket : pom.xml du Standard ({len(dep_std)} dépôt(s))…")
+
+        def poms_racine(d: _Depot) -> list:
+            if d.racine is not None:
+                return [(f"{d.source}/{p.relative_to(d.racine).as_posix()}", _pom(p)) for p in _poms(d.racine, 2)]
+            try:
+                brut = lecteur.brut(d.projet, d.slug, "pom.xml", d.voulue, TAILLE_LECTURE)[0]
+            except bitbucket.BitbucketErreur:
+                if not d.voulue:
+                    return []
+                try:
+                    brut = lecteur.brut(d.projet, d.slug, "pom.xml", "", TAILLE_LECTURE)[0]   # branche par défaut
+                except bitbucket.BitbucketErreur:
+                    return []
+            return [(f"{d.depot}:pom.xml", _xml(brut))]
+
+        poms_std = []
+        for _, r in lecteur.en_parallele(poms_racine, dep_std, avance("pom.xml du Standard")):
+            if isinstance(r, list):
+                poms_std += r
+        groupes = _groupes(p for _, p in poms_std)
+
+        def citations_depot(d: _Depot) -> list:
+            if d.erreur:
+                return []
+            trouvees = []
+            for chemin in d.poms:
+                pom = _xml(d.lire(lecteur, chemin, TAILLE_LECTURE))
+                if pom is not None:
+                    trouvees += _citations(d.reference(chemin), pom, groupes)
+            return trouvees
+
+        citees = []
+        for d, r in lecteur.en_parallele(citations_depot, dep_spe):
+            if isinstance(r, Exception):
+                limites.append(f"{d.libelle} : pom.xml illisibles ({r}).")
+            else:
+                citees += r
+        v = _version_retenue(groupes, citees, []) if dep_std else {}
+
+        # 4. Dépôts du Standard : branche de la version du client, commit, fichiers
+        source_std = next((s for s in profil.sources if s.nom == standard), None)
+        if source_std is not None and source_std.branche:
+            candidates = [source_std.branche]
+        elif v.get("version"):
+            candidates = [f"v{v['version']}"]
+            v["branche_deduite"] = candidates[0]
+        else:
+            candidates = []
+        sur_etape(f"Inventaire Bitbucket : {len(dep_std)} dépôt(s) du Standard"
+                  + (f", branche {candidates[0]}" if candidates else "") + "…")
+        for d, r in lecteur.en_parallele(lambda d: _preparer_depot(lecteur, d, candidates, FICHIERS_MAX * 3),
+                                         dep_std, avance("dépôts du Standard")):
+            if isinstance(r, Exception):
+                d.erreur = str(r) or type(r).__name__
+        if not v.get("version") and poms_std:
+            v = _version_retenue(groupes, [], poms_std)
+
+        distants_std = [d for d in dep_std if d.racine is None]
+        replis = [d.libelle for d in distants_std if d.repli and not d.erreur]
+        if replis:
+            limites.append(f"Standard : {len(replis)} dépôt(s) sans branche « {candidates[0]} », lus sur leur "
+                           f"branche par défaut ({', '.join(replis[:6])}{'…' if len(replis) > 6 else ''}).")
+        elif distants_std and not candidates:
+            limites.append("Standard lu sur la branche par défaut de chaque dépôt : branche de la version du client "
+                           "inconnue (ni branche dans la source Standard, ni version dans les pom.xml).")
+        repli_spe = [d.libelle for d in dep_spe if d.repli and not d.erreur]
+        if repli_spe:
+            limites.append(f"Spécifique : {len(repli_spe)} dépôt(s) sans la branche de la source, lus sur leur "
+                           f"branche par défaut ({', '.join(repli_spe[:6])}{'…' if len(repli_spe) > 6 else ''}).")
+        for d in dep_spe + dep_std:
+            if d.erreur and d.erreur != "dépôt vide":
+                limites.append(f"{d.libelle} : non inventorié ({d.erreur[:200]}).")
+            if d.tronque:
+                limites.append(f"{d.libelle} : liste des fichiers tronquée (plafond de fichiers par dépôt).")
+        interdits = sum(d.interdits for d in dep_spe)
+        if interdits:
+            limites.append(f"{interdits} fichier(s) interdit(s) par le profil (secrets, clés) écarté(s) sans être "
+                           "lu(s).")
+
+        # 5. Index du Standard : (dépôt, chemin), chemin seul (Standard local) et noms de classes sous src/main
+        par_depot, par_chemin_local, index_classes = {}, {}, {}
+        for d in dep_std:
+            if d.erreur:
+                continue
+            for chemin in d.fichiers:
+                if d.racine is None:
+                    par_depot[(d.slug, chemin)] = d
+                else:
+                    par_chemin_local.setdefault(chemin, d)
+                if chemin.endswith((".java", ".kt")) and "/src/main/" in f"/{chemin}":
+                    index_classes.setdefault(chemin.rsplit("/", 1)[-1], d.reference_lue(chemin))
+
+        def meme_chemin(d: _Depot, chemin: str):
+            """(dépôt du Standard, chemin) du fichier Standard au même endroit, None sinon."""
+            if d.slug and (d.slug, chemin) in par_depot:                       # même dépôt, même chemin
+                return par_depot[(d.slug, chemin)], chemin
+            for candidat in ([f"{d.slug}/{chemin}"] if d.slug else []) + [chemin]:   # Standard en dossier local
+                if candidat in par_chemin_local:
+                    return par_chemin_local[candidat], candidat
+            if not d.slug and "/" in chemin:                                   # spécifique local cloné par projet
+                tete, reste = chemin.split("/", 1)
+                if (tete, reste) in par_depot:
+                    return par_depot[(tete, reste)], reste
+            return None
+
+        # 6. Classement ; un fichier au même chemin que le Standard est comparé
+        retenus, a_comparer = [], []
+        for d in dep_spe:
+            if d.erreur:
+                continue
+            presents = set(d.fichiers)
+            for chemin in d.fichiers:
+                nom = chemin.rsplit("/", 1)[-1]
+                if nom.startswith("original."):           # référence Standard d'un processus Studio
+                    continue
+                trouve = meme_chemin(d, chemin)
+                if trouve is not None:
+                    a_comparer.append((d, chemin, trouve))
+                    continue
+                entree = {"chemin": chemin}
+                original = chemin[:-len(nom)] + "original" + nom[10:]
+                if nom.startswith("customized.") and original in presents:
+                    entree.update(type="surcharge", standard=d.reference(original))
+                elif nom in index_classes and "/src/main/" in f"/{chemin}":
+                    entree.update(type="surcharge", standard=index_classes[nom])
+                else:
+                    entree["type"] = "ajout"
+                retenus.append((d, entree))
+
+        plafond = max(0, int(reglages.synthese_comparaisons))
+        compares, hors_plafond = a_comparer[:plafond], a_comparer[plafond:]
+        sur_etape(f"Inventaire Bitbucket : {len(compares)} fichier(s) au même chemin que le Standard à comparer…")
+        contenus = {}
+
+        def comparer(item) -> tuple:
+            d, chemin, (ds, chemin_std) = item
+            a = d.lire(lecteur, chemin, TAILLE_COMPARAISON + 1)
+            b = ds.lire(lecteur, chemin_std, TAILLE_COMPARAISON + 1)
+            if len(a) > TAILLE_COMPARAISON or len(b) > TAILLE_COMPARAISON:
+                return None, a                                  # trop gros pour être comparé
+            return a.replace(b"\r\n", b"\n") == b.replace(b"\r\n", b"\n"), a
+
+        identiques, non_compares, trop_gros = 0, [], 0
+        for (d, chemin, (ds, chemin_std)), r in lecteur.en_parallele(comparer, compares, avance("fichiers comparés")):
+            if isinstance(r, Exception):
+                non_compares.append(d.reference(chemin))
+                continue
+            egal, contenu = r
+            if egal:
+                identiques += 1
+                continue
+            trop_gros += egal is None
+            contenus[(id(d), chemin)] = contenu[:TAILLE_LECTURE]
+            retenus.append((d, {"chemin": chemin, "type": "surcharge", "standard": ds.reference_lue(chemin_std)}))
+        if hors_plafond:
+            limites.append(f"Plafond de {plafond} fichiers comparés atteint : {len(hors_plafond)} fichier(s) au même "
+                           "chemin qu'un fichier du Standard non comparé(s), donc absent(s) de l'inventaire (ex. "
+                           + ", ".join(d.reference(c) for d, c, _ in hors_plafond[:5]) + ").")
+        if non_compares:
+            limites.append(f"{len(non_compares)} fichier(s) au même chemin que le Standard illisible(s) sur Bitbucket, "
+                           "absent(s) de l'inventaire (ex. " + ", ".join(non_compares[:5]) + ").")
+        if trop_gros:
+            limites.append(f"{trop_gros} fichier(s) de plus de {TAILLE_COMPARAISON // 1_000_000} Mo non comparé(s) au "
+                           "Standard : classé(s) en surcharge sans vérifier qu'ils diffèrent.")
+
+        # 7. Tickets cités : contenu déjà lu pour la comparaison, sinon lecture plafonnée (code d'abord)
+        a_lire = [(d, e["chemin"]) for d, e in retenus if (id(d), e["chemin"]) not in contenus]
+        a_lire.sort(key=lambda x: (Path(x[1]).suffix.lower() not in _PRIORITE_LECTURE, x[0].libelle, x[1]))
+        plafond_lectures = max(0, int(reglages.synthese_lectures))
+        lus = a_lire[:plafond_lectures]
+        sur_etape(f"Inventaire Bitbucket : {len(lus)} fichier(s) spécifique(s) lu(s) pour les tickets cités…")
+        erreurs_lecture = 0
+        for (d, chemin), r in lecteur.en_parallele(lambda x: x[0].lire(lecteur, x[1], TAILLE_LECTURE), lus,
+                                                   avance("fichiers lus")):
+            if isinstance(r, Exception):
+                erreurs_lecture += 1
+            else:
+                contenus[(id(d), chemin)] = r
+        if len(a_lire) > plafond_lectures:
+            limites.append(f"Plafond de {plafond_lectures} fichiers lus atteint : tickets cités cherchés dans "
+                           f"{len(retenus) - len(a_lire) + plafond_lectures} fichier(s) spécifique(s) sur "
+                           f"{len(retenus)}.")
+        if erreurs_lecture:
+            limites.append(f"{erreurs_lecture} fichier(s) spécifique(s) illisible(s) sur Bitbucket : tickets cités "
+                           "non cherchés dedans.")
+
+        # 8. Éléments : regroupés par (source, dépôt, catégorie, unité)
+        groupes_el = {}
+        for d, entree in retenus:
+            chemin = entree["chemin"]
+            cat = categorie(chemin, d.slug or d.source)
+            if cat == "paramétrage" and entree["type"] == "ajout":
+                entree["type"] = "paramétrage"
+            unit = unite(chemin)
+            if unit in (".", "") and d.slug:
+                unit = d.slug
+            groupe = groupes_el.setdefault((d.source, d.depot, cat, unit),
+                                           {"fichiers": [], "tickets": {}, "branche": d.branche})
+            groupe["fichiers"].append(entree)
+            texte = contenus.get((id(d), chemin), b"").decode("utf-8", errors="ignore")
+            for t in _tickets_texte(texte):
+                groupe["tickets"][t] = groupe["tickets"].get(t, 0) + 1
+
+        elements = []
+        for (source, depot, cat, unit), groupe in sorted(groupes_el.items(),
+                                                         key=lambda g: (CATEGORIES.index(g[0][2]), g[0])):
+            types = {f["type"] for f in groupe["fichiers"]}
+            nature = "surcharge" if "surcharge" in types else ("paramétrage" if types == {"paramétrage"} else "ajout")
+            element = {
+                "id": "e-" + hashlib.sha1(f"{source}:{depot}:{cat}:{unit}".encode()).hexdigest()[:8],
+                "source": source, "categorie": cat, "unite": unit, "nature": nature,
+                "nb_fichiers": len(groupe["fichiers"]),
+                "fichiers": sorted(groupe["fichiers"], key=lambda f: (f["type"] != "surcharge", f["chemin"])),
+                "tickets": [t for t, _ in sorted(groupe["tickets"].items(), key=lambda x: (-x[1], x[0]))][:5],
+            }
+            if depot:
+                element.update(depot=depot, branche=groupe["branche"])
+            elements.append(element)
+
+        def references(liste: list) -> list:
+            par_source = {}
+            for d in liste:
+                par_source.setdefault(d.source, []).append(d)
+            resultat = []
+            for nom, ds in par_source.items():
+                if ds[0].racine is not None:
+                    resultat.append(ds[0].info())
+                    continue
+                source = next(s for s in profil.sources if s.nom == nom)
+                resultat.append({"source": nom, "bitbucket": bitbucket.cible(source.depot) or source.depot,
+                                 "branches": sorted({d.branche for d in ds if d.branche and not d.erreur}),
+                                 "depots": [d.info() for d in ds]})
+            return resultat
+
+        std_ref = references(dep_std)
+        duree = round(time.monotonic() - debut, 1)
+        sur_etape(f"Inventaire Bitbucket terminé : {len(elements)} élément(s), {lecteur.appels} appel(s), {duree} s.")
+        return {"projet": profil.nom, "genere_le": datetime.now().isoformat(timespec="seconds"),
+                "standard": std_ref[0] if std_ref else {}, "specifiques": references(dep_spe),
+                "version": v, "elements": elements, "fichiers_identiques": identiques, "limites": limites,
+                "bitbucket": {"appels": lecteur.appels, "duree_s": duree, "parallele": lecteur.parallele,
+                              "depots": len(dep_std) + len(dep_spe),
+                              "fichiers_listes": sum(len(d.fichiers) for d in dep_std + dep_spe),
+                              "comparaisons": len(compares), "lectures": len(lus)}}
+    finally:
+        lecteur.fermer()
 
 
 # ---------------------------------------------------------------------------
@@ -686,7 +1219,9 @@ def donnees_lot(dossier: Path, numero: int) -> str:
     blocs = []
     for ident in lot["elements"]:
         el = par_id[ident]
-        lignes = [f"### {ident} — {el['categorie']} · {el['unite']} (source {el['source']}, {el['nature']}, "
+        ou = f"dépôt Bitbucket {el['depot']}, branche {el.get('branche') or '(défaut)'}" if el.get("depot") \
+            else f"source {el['source']}"
+        lignes = [f"### {ident} — {el['categorie']} · {el['unite']} ({ou}, {el['nature']}, "
                   f"{el['nb_fichiers']} fichier(s))"]
         for f in el["fichiers"][:FICHIERS_PAR_ELEMENT]:
             lignes.append(f"- {f['chemin']} [{f['type']}]" + (f" ← Standard : {f['standard']}" if f.get("standard")
@@ -708,6 +1243,13 @@ def donnees_finale(dossier: Path) -> str:
               else "Version du Standard : introuvable dans les pom.xml.",
               f"Éléments spécifiques inventoriés : {len(inv['elements'])} ; fichiers identiques au Standard ignorés : "
               f"{inv['fichiers_identiques']}."]
+    lignes += [f"Source {'Standard' if s is inv.get('standard') else 'spécifique'} : {_libelle_source(s)}"
+               for s in ([inv["standard"]] if inv.get("standard") else []) + (inv.get("specifiques") or [])]
+    if inv.get("bitbucket"):
+        lignes.append("Sources lues sur Bitbucket (non clonées) : bitbucket_fichiers et bitbucket_lire avec le dépôt "
+                      "« PROJET/depot » et la branche.")
+    if inv.get("limites"):
+        lignes.append(f"Limites de l'inventaire : {len(inv['limites'])} (déjà reportées dans les points à vérifier).")
     par_categorie = {}
     for el in inv["elements"]:
         par_categorie[el["categorie"]] = par_categorie.get(el["categorie"], 0) + 1
@@ -804,6 +1346,21 @@ def _outil(nom: str, entree: dict) -> str:
 # Rapport : assemblage, contrôle, Markdown et Word
 # ---------------------------------------------------------------------------
 
+def _libelle_source(s: dict) -> str:
+    """Source lue : dossier local, dépôt Git (commit) ou source Bitbucket (branches, dépôts lus)."""
+    if s.get("bitbucket"):
+        depots = s.get("depots") or []
+        lus = [d for d in depots if d.get("commit")]
+        branches = s.get("branches") or []
+        texte = (f"{s['source']} — Bitbucket, {s['bitbucket']}, branche "
+                 f"{', '.join(branches[:4]) + ('…' if len(branches) > 4 else '') if branches else 'inconnue'}, "
+                 f"{len(lus)}/{len(depots)} dépôt(s) lu(s), sans clonage")
+        if len(depots) == 1 and lus:
+            texte += f" @ {lus[0]['commit']} ({lus[0].get('date', '')[:10]})"
+        return texte
+    return s["source"] + (f" @ {s['commit']} ({s['date'][:10]})" if s.get("commit") else " (dossier local)")
+
+
 def _cellule(valeur) -> str:
     if isinstance(valeur, list):
         valeur = " ; ".join(str(v) for v in valeur if str(v).strip())
@@ -829,15 +1386,18 @@ def assembler(dossier: Path) -> list:
     v = inv.get("version") or {}
     lignes = [["Projet", inv["projet"], "profil de l'agent Odatio", "vérifié"]]
     if inv.get("standard"):
-        s = inv["standard"]
-        lignes.append(["Source Standard", s["source"] + (f" @ {s['commit']} ({s['date'][:10]})" if s.get("commit")
-                                                         else " (dossier local)"), "sources du profil", "vérifié"])
+        lignes.append(["Source Standard", _libelle_source(inv["standard"]), "sources du profil", "vérifié"])
     for s in inv.get("specifiques") or []:
-        lignes.append(["Source spécifique", s["source"] + (f" @ {s['commit']} ({s['date'][:10]})" if s.get("commit")
-                                                           else " (dossier local)"), "sources du profil", "vérifié"])
+        lignes.append(["Source spécifique", _libelle_source(s), "sources du profil", "vérifié"])
+        for d in (s.get("depots") or []) if len(s.get("depots") or []) > 1 else []:
+            if d.get("commit"):
+                lignes.append(["Dépôt spécifique", f"{d['depot']} @ {d.get('branche', '')}, commit {d['commit']} "
+                               f"({d.get('date', '')[:10]})", "Bitbucket", "vérifié"])
     if v.get("version"):
         detail = v["detail"] + (f" ; autres versions citées : {', '.join(v['divergentes'])}" if v.get("divergentes")
                                 else "")
+        if v.get("branche_deduite"):
+            detail += f" ; Standard lu sur la branche {v['branche_deduite']}, déduite de cette version"
         lignes.append(["Version du Standard", f"{v['version']} ({v['complete']}) — {detail}", v["source"],
                        "vérifié" if "pas citée" not in v["detail"] else "déduit"])
     for c in finale.get("contexte") or []:
@@ -916,11 +1476,20 @@ def assembler(dossier: Path) -> list:
                   f"Lots : {sum(1 for l in e['lots'] if l['statut'] == 'fait')} / {len(e['lots'])} faits ; partie "
                   f"finale : {'faite' if e['finale'].get('statut') == 'fait' else 'non faite'}",
                   f"Fichiers identiques au Standard ignorés : {inv.get('fichiers_identiques', 0)}",
-                  "Sources lues : " + ", ".join(
-                      f"{s['source']}" + (f" @ {s['commit']} du {s['date'][:10]}" if s.get("commit") else "")
+                  "Sources lues : " + " ; ".join(
+                      _libelle_source(s)
                       for s in ([inv["standard"]] if inv.get("standard") else []) + (inv.get("specifiques") or [])),
-                  f"Inventaire du {inv['genere_le'][:16].replace('T', ' à ')}",
-                  f"Coût : {e.get('cout_usd') or 0:.2f} $ ; durée : {round((e.get('duree_s') or 0) / 60, 1)} min"]
+                  f"Inventaire du {inv['genere_le'][:16].replace('T', ' à ')}"]
+    if inv.get("bitbucket"):
+        b = inv["bitbucket"]
+        couverture.append(f"Inventaire lu sur Bitbucket, sans clonage : {b['appels']} appel(s), {b['depots']} "
+                          f"dépôt(s), {b['fichiers_listes']} fichier(s) listé(s), {b['comparaisons']} comparé(s) au "
+                          f"Standard, {b['lectures']} lu(s) pour les tickets, {b['duree_s']} s")
+    limites = inv.get("limites") or []
+    couverture.append(f"Limites de l'inventaire : {len(limites)} (détail dans les points à vérifier)" if limites
+                      else "Limites de l'inventaire : aucune")
+    couverture.append(f"Coût : {e.get('cout_usd') or 0:.2f} $ ; durée : {round((e.get('duree_s') or 0) / 60, 1)} "
+                      "min")
     blocs += [("titre", 2, f"6. {SECTIONS[5]}"), ("liste", couverture)]
     return blocs
 

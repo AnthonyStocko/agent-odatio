@@ -182,12 +182,22 @@ en base) et l'audit. Le rapport est contrôlé avant d'être écrit : six sectio
 chaque ligne, aucun secret, e-mail, téléphone ni chaîne de connexion. Les noms de personnes sont écartés par la
 consigne de rédaction, pas par un filtre : **relis le rapport avant de l'envoyer au support**.
 
+**Sources sur Bitbucket.** Dès qu'une source du projet est un dépôt ou un projet Bitbucket (ex. Standard
+`…/projects/COMPONENT`, spécifique `…/projects/CLIENT`), la synthèse lit le code **par l'API Bitbucket, sans rien
+cloner** : liste des fichiers, comparaison du contenu avec le Standard, tickets cités, version dans les `pom.xml`,
+dernier commit de chaque dépôt. Le Standard est lu sur la branche de sa source, sinon sur la branche de la version
+déduite des `pom.xml` du client (ex. `v26.24`), sinon sur la branche par défaut de chaque dépôt. La progression
+s'affiche pendant l'inventaire (environ 1 min 30 pour 190 dépôts). Les lots lisent ensuite les fichiers avec les
+outils Bitbucket et citent « dépôt:chemin:ligne ». Un plafond atteint ou un dépôt illisible est signalé dans les
+points à vérifier et la couverture, jamais ignoré.
+
 **Arrêter, reprendre.** L'avancement est enregistré après chaque lot. « Arrêter » (ou fermer l'onglet) ne perd
 que le lot en cours ; « Reprendre » repart du lot suivant. Un lot qui échoue (plafond atteint…) est signalé et
 relancé par « Reprendre » ; le rapport est alors marqué « partiel ».
 
 **Réglages** (Configuration, Claude) : éléments par lot (12), étapes (80) et accès base (30) par session de
-synthèse. Le coût maximal par question s'applique à chaque session : avec un plafond bas, des lots peuvent
+synthèse ; pour l'inventaire sur Bitbucket, dépôts parcourus (250), fichiers comparés au Standard (10 000) et
+fichiers lus pour les tickets (2 000). Le coût maximal par question s'applique à chaque session : avec un plafond bas, des lots peuvent
 s'arrêter avant la fin. Une synthèse coûte plusieurs sessions : regarde la ligne Couverture pour le coût réel.
 
 Résultat dans `.cache/synthese/<projet>-<date>/` : `rapport.md`, `rapport.docx`, et l'inventaire, les lots et
@@ -199,7 +209,7 @@ l'état (JSON). Boutons : Télécharger (.md), Word, Copier (Markdown). En ligne
 
 | Section | Contenu |
 |---|---|
-| `sources` | Une ou plusieurs : `chemin` (dossier local ou partage) ou `depot` + `branche` (cloné avec `BITBUCKET_HTTP_TOKEN` ; l'adresse de la page du dépôt dans Bitbucket, `…/projects/…/repos/…`, est convertie en adresse de clonage, avec la branche affichée si elle y figure). L'adresse d'un **projet** Bitbucket, `…/projects/PROJ`, donne tous ses dépôts : chacun est cloné dans un sous-dossier de la source, et un dépôt ajouté au projet est récupéré à la mise à jour suivante ; la `branche` s'applique aux dépôts qui l'ont, les autres suivent leur branche par défaut. Le **Standard n'est jamais cloné** : une source `depot` dont le nom contient « standard » est lue par l'agent directement sur Bitbucket (outils `bitbucket_*`) ; un Standard en `chemin` local reste lu tel quel, et c'est celui qu'il faut pour la synthèse client. Avec le Standard et le spécifique client, l'agent distingue ce qui relève de chacun. |
+| `sources` | Une ou plusieurs : `chemin` (dossier local ou partage) ou `depot` + `branche` (cloné avec `BITBUCKET_HTTP_TOKEN` ; l'adresse de la page du dépôt dans Bitbucket, `…/projects/…/repos/…`, est convertie en adresse de clonage, avec la branche affichée si elle y figure). L'adresse d'un **projet** Bitbucket, `…/projects/PROJ`, donne tous ses dépôts : chacun est cloné dans un sous-dossier de la source, et un dépôt ajouté au projet est récupéré à la mise à jour suivante ; la `branche` s'applique aux dépôts qui l'ont, les autres suivent leur branche par défaut. Le **Standard n'est jamais cloné** : une source `depot` dont le nom contient « standard » est lue par l'agent directement sur Bitbucket (outils `bitbucket_*`) ; un Standard en `chemin` local reste lu tel quel. La synthèse client accepte l'un comme l'autre. Avec le Standard et le spécifique client, l'agent distingue ce qui relève de chacun. |
 | `logs` | `dossiers` (fichiers lus avec Grep/Read), `groundcover_filtre` (filtre gcQL imposé à toute recherche) et/ou `ssh` (logs d'un serveur lus par SSH, voir plus bas). |
 | `base` | Connexion en lecture seule ; le mot de passe est dans le `.env`, sous le nom donné par `mot_de_passe_env`. |
 | `fichiers_interdits` | Motifs de fichiers que l'agent ne lit jamais, en plus des `.env`, clés et keystores. |

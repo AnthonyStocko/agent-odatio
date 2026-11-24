@@ -106,6 +106,10 @@ class Reglages:
     synthese_lot: int = 12            # éléments de l'inventaire expliqués par lot
     synthese_max_tours: int = 80      # étapes au plus par session de synthèse (lot ou finale)
     requetes_base_synthese: int = 30  # accès base au plus par session de synthèse
+    # Inventaire de la synthèse lu sur Bitbucket (sources dépôt ou projet, jamais clonées pour la synthèse)
+    synthese_depots: int = 250          # dépôts parcourus au plus (Standard et spécifique)
+    synthese_comparaisons: int = 10000  # fichiers au même chemin que le Standard comparés au plus
+    synthese_lectures: int = 2000       # fichiers spécifiques lus au plus pour y chercher les tickets cités
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +249,10 @@ def reglages() -> Reglages:
                     requetes_base_generation=int(brut.get("requetes_base_generation", 40)),
                     synthese_lot=int(brut.get("synthese_lot", 12)),
                     synthese_max_tours=int(brut.get("synthese_max_tours", 80)),
-                    requetes_base_synthese=int(brut.get("requetes_base_synthese", 30)))
+                    requetes_base_synthese=int(brut.get("requetes_base_synthese", 30)),
+                    synthese_depots=int(brut.get("synthese_depots", 250)),
+                    synthese_comparaisons=int(brut.get("synthese_comparaisons", 10000)),
+                    synthese_lectures=int(brut.get("synthese_lectures", 2000)))
 
 
 def _identifiant(nom: str) -> str:

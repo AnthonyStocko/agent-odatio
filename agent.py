@@ -30,7 +30,7 @@ import sys
 
 from pathlib import Path
 
-from odatio_agent import config, documentation, historique, outils, sources, synthese, video
+from odatio_agent import bitbucket, config, documentation, historique, outils, sources, synthese, video
 from odatio_agent.etapes import resumer
 from odatio_agent.session import Session
 
@@ -209,16 +209,24 @@ def tester(profil: config.Profil, maj: bool) -> int:
 
 
 async def synthetiser(profil: config.Profil, maj: bool, standard: str = "", dossier: str = "") -> int:
-    """Synthèse client : nouvelle (inventaire puis lots) ou reprise d'un dossier existant."""
-    prets = sources.preparer(profil, mettre_a_jour=maj)
+    """Synthèse client : nouvelle (inventaire puis lots) ou reprise d'un dossier existant. Dès qu'une source
+    est sur Bitbucket, l'inventaire est lu par l'API et aucune source n'est clonée."""
+    distant = synthese.sur_bitbucket(profil) if not dossier else "bitbucket" in synthese.inventaire(Path(dossier))
+    prets = sources.locales(profil) if distant else sources.preparer(profil, mettre_a_jour=maj)
     logs = sources.dossiers_logs(profil)
     if dossier:
         cible = Path(dossier)
         synthese.etat(cible)
     else:
         standard = synthese.verifier_standard(profil, standard)
-        print(f"{GRIS}Inventaire des éléments spécifiques (sans appel au modèle)…{FIN}")
-        inventaire = synthese.inventorier(profil.nom, [(n, str(c)) for n, c in prets], standard)
+        if distant:
+            inventaire = synthese.inventorier_bitbucket(
+                profil, standard, config.reglages(), lambda texte: print(f"{GRIS}  · {texte}{FIN}", flush=True))
+            for limite in inventaire["limites"]:
+                print(f"{GRIS}  ⚠ {limite}{FIN}")
+        else:
+            print(f"{GRIS}Inventaire des éléments spécifiques (sans appel au modèle)…{FIN}")
+            inventaire = synthese.inventorier(profil.nom, [(n, str(c)) for n, c in prets], standard)
         if not inventaire["elements"]:
             print("Aucun élément spécifique : les sources spécifiques sont identiques au Standard.")
             return 0
@@ -309,7 +317,8 @@ def main() -> int:
                                           not args.sans_maj, args.captures, args.sans_video))
         return asyncio.run(converser(profil, config.reglages(), args.question, not args.sans_maj, ticket,
                                      conversation, dossier))
-    except (config.ConfigError, sources.SourceError, outils.OutilErreur, synthese.SyntheseErreur) as e:
+    except (config.ConfigError, sources.SourceError, outils.OutilErreur, synthese.SyntheseErreur,
+            bitbucket.BitbucketErreur) as e:
         print(f"{ROUGE}{e}{FIN}")
         return 2
 
