@@ -19,7 +19,7 @@ import requests
 from tools import db_tools, groundcover_tools, jira_tools
 from tools.secret_tools import mask_secrets, register_secrets
 
-from . import bitbucket, config, logs_ssh
+from . import bitbucket, config, doc_odatio, logs_ssh
 
 config.retirer_secrets_environnement()  # db_tools et jira_tools viennent de charger le .env dans os.environ
 
@@ -257,6 +257,20 @@ def bitbucket_comparer(profil, depot: str, branche: str, vers: str = "", fichier
 def bitbucket_chercher(profil, texte: str, depot: str = "", projet: str = "") -> str:
     return _bitbucket(profil, "bitbucket_chercher", {"recherche": texte[:100], "depot": depot, "projet": projet},
                       lambda: bitbucket.chercher(profil, texte, depot, projet))
+
+
+def doc_sommaire(profil, dossier: str = "", motif: str = "") -> str:
+    return _bitbucket(profil, "doc_sommaire", {"dossier": dossier, "motif": motif[:100]},
+                      lambda: doc_odatio.sommaire(profil, dossier, motif))
+
+
+def doc_lire(profil, chemin: str, debut: int = 1, nombre: int = bitbucket.LIGNES_MAX) -> str:
+    return _bitbucket(profil, "doc_lire", {"fichier": chemin[:300]},
+                      lambda: doc_odatio.lire(profil, chemin, debut, nombre))
+
+
+def doc_chercher(profil, texte: str) -> str:
+    return _bitbucket(profil, "doc_chercher", {"recherche": texte[:100]}, lambda: doc_odatio.chercher(profil, texte))
 
 
 def jira_joindre(cle: str, fichiers: list, profil: config.Profil | None = None) -> list:

@@ -120,6 +120,18 @@ Un dépôt se désigne par le nom d'une source du projet (`standard`), par `PROJ
 
 Le jeton détermine ce qui est lisible : un jeton personnel voit tous tes dépôts, un jeton de projet seulement son projet. « Projets autorisés » restreint en plus les projets que l'agent peut consulter.
 
+### Documentation Odatio
+
+Le site de la documentation Odatio est derrière une connexion Microsoft : l'agent en lit donc les **sources**, sur Bitbucket et sans clone, avec le même jeton et les mêmes garde-fous que ci-dessus. Le dépôt, la branche et le dossier se règlent dans le manager (Configuration › Accès › Documentation Odatio) ; lancé seul, l'agent les lit dans son `.env` (`ODATIO_DOC_DEPOT`, `ODATIO_DOC_BRANCHE`, `ODATIO_DOC_DOSSIER`). Si « Projets autorisés » est renseigné, il doit inclure le projet de la doc.
+
+| Outil | Usage |
+|-------|-------|
+| `doc_sommaire` | Les fichiers d'un dossier de la doc, filtrés par motif. |
+| `doc_chercher` | La recherche plein texte dans la doc (branche par défaut, si la recherche est activée). |
+| `doc_lire` | Un fichier de la doc ; accepte aussi l'adresse d'une page du site (`…/development/index.html`). |
+
+La doc décrit le fonctionnement prévu du Standard : l'agent la cite, mais le code et la base font foi, et elle ne dit rien du spécifique d'un client.
+
 ### Documentation pour le consultant fonctionnel
 
 Demande-le simplement dans la conversation (« fais-moi une vidéo de cette tâche pour le consultant ») : l'agent enquête, enregistre sa documentation, et la vidéo est montée puis affichée sous sa réponse. Pour y joindre des captures d'écran, passe par le bloc « Documentation pour le consultant fonctionnel » de l'assistant (ou `python agent.py --profil <p> --ticket ODA-1234 --documenter --captures <dossier>`). Dans les deux cas, l'agent enquête sur la tâche ou la fonctionnalité, en repartant de la conversation en cours, puis rédige :
