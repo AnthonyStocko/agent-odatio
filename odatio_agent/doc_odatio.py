@@ -21,6 +21,24 @@ from . import bitbucket, config
 PAGES = (".md", ".rst", ".adoc", ".asciidoc", ".html", ".txt")    # sources possibles d'une page publiée
 
 
+def candidats_antora(page: str) -> list:
+    """Sources Antora possibles d'une page publiée, de la plus probable à la moins probable.
+
+    Antora publie ``modules/<module>/pages/<page>.adoc`` sous ``[<version>/][<module>/]<page>.html`` (module ROOT
+    et version par défaut omis) : « development/index.html » peut venir de modules/ROOT/pages/development/
+    index.adoc, de modules/development/pages/index.adoc, ou d'une version « development » (modules/ROOT/pages/
+    index.adoc). Chemins relatifs, comparés à la fin des fichiers du dépôt."""
+    parties = [p for p in re.sub(r"\.html?$", "", page).split("/") if p] or ["index"]
+    candidats = []
+    for saut in range(0, min(2, len(parties) - 1) + 1):            # 0, 1 ou 2 segments de tête : version…
+        reste = parties[saut:]
+        candidats.append("modules/ROOT/pages/" + "/".join(reste) + ".adoc")
+        if len(reste) > 1:
+            candidats.append(f"modules/{reste[0]}/pages/" + "/".join(reste[1:]) + ".adoc")
+        candidats.append("modules/ROOT/pages/" + "/".join(reste) + "/index.adoc")
+    return list(dict.fromkeys(candidats))
+
+
 def configuree(profil=None) -> bool:
     return bool(config.secret("ODATIO_DOC_DEPOT")) and bitbucket.configure(profil)
 
@@ -84,6 +102,13 @@ def resoudre(profil, chemin: str) -> str:
     for c in candidats:
         if c in tous:
             return c
+    page = complet[len(dossier) + 1:] if dossier and complet.startswith(dossier + "/") else complet
+    for antora in candidats_antora(page):              # site Antora : modules/<module>/pages/<page>.adoc
+        trouves = sorted(f for f in tous if f == antora or f.endswith("/" + antora))
+        if len(trouves) == 1:
+            return trouves[0]
+        if trouves:
+            raise bitbucket.BitbucketErreur(f"« {chemin} » ambigu ({', '.join(trouves[:8])}) : utilise doc_sommaire.")
     relatif = [c[len(dossier) + 1:] if dossier else c for c in candidats]   # site publié dans un sous-dossier
     proches = sorted(f for f in tous if f.endswith(tuple("/" + r for r in relatif)))
     if len(proches) == 1:
