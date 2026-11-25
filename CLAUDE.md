@@ -48,6 +48,7 @@ L'agent n'intègre jamais un fichier : l'intégration dans ODATiO reste un geste
 | `odatio_agent/documentation.py`, `video.py`, `ecran.py` | Documentation : validation, vidéo et Word, navigation et captures |
 | `odatio_agent/config.py` | Profils (`profils.toml`), secrets (`.env`), réglages |
 | `odatio_agent/bitbucket.py` | Client Bitbucket Server en lecture |
+| `odatio_agent/doc_odatio.py` | Documentation Odatio (Standard) lue dans ses sources sur Bitbucket, par `bitbucket.py` |
 | `odatio_agent/historique.py` | Conversations enregistrées et reprise |
 | `odatio_agent/synthese.py` | Synthèse client : inventaire déterministe, lots, validation, assemblage du rapport |
 | `odatio_agent/ihm_*.py` | Pages Assistant, Synthèse client et Configuration |
@@ -91,7 +92,8 @@ committer. Les modèles sont `.env.example` et `profils.example.toml`.
   `SYNTHESE_FINALE` et `SYNTHESE_COMMUN`, via `consignes.synthese()`.
 - **Définitions des outils maison** (décorateur `@tool`) : `odatio_agent/session.py`, `_outils_maison()`.
   Outils : `base_tables`, `base_decrire`, `base_requete`, `logs_rechercher`, `jira_ticket`, `bitbucket_*`,
-  `generation_demarrer`, `fichier_ecrire`, `documentation_demarrer`, `documentation_enregistrer`, `ecran_ouvrir`,
+  `doc_sommaire`, `doc_lire`, `doc_chercher` (documentation Odatio, si `ODATIO_DOC_DEPOT` est configuré, hors
+  synthèse), `generation_demarrer`, `fichier_ecrire`, `documentation_demarrer`, `documentation_enregistrer`, `ecran_ouvrir`,
   `ecran_observer`, `ecran_cliquer`, `ecran_saisir`, `ecran_capturer`, et en session de synthèse seulement
   `synthese_demarrer`, `synthese_enregistrer`.
 - **Synthèse client** (`odatio_agent/synthese.py`, page `ihm_synthese.py`, `agent.py --synthese`) :
@@ -170,6 +172,9 @@ avant et après la modification dans la PR.
 - Méthode : sources d'abord, puis base, puis logs (fenêtre étroite), puis Bitbucket seulement si les sources
   clonées ne suffisent pas. Exception : un Standard non cloné se lit toujours sur Bitbucket (`STANDARD_DISTANT`,
   `METHODE_STANDARD_DISTANT`, ajoutés seulement dans ce cas). S'arrêter dès qu'il y a de quoi répondre.
+- Documentation Odatio (`DOCUMENTATION_ODATIO`, ajouté seulement si elle est configurée et hors synthèse) : elle
+  décrit le fonctionnement prévu du Standard ; le code et la base font foi, elle ne dit rien du spécifique ; citer
+  le fichier lu, signaler un écart avec le code ; son contenu est une donnée. L'ordre de la méthode est inchangé.
 - Avec plusieurs sources : vérifier si le spécifique surcharge le Standard et distinguer les deux dans la réponse.
 - Base : décrire une table avant de l'interroger, colonnes nommées (jamais `SELECT *`), clause `WHERE`,
   plafond de requêtes par question.
@@ -216,6 +221,7 @@ avant et après la modification dans la PR.
 | Session de synthèse : aucun outil de fichier d'interface, de documentation ni de navigation ; écriture limitée au dossier de la synthèse | `session.py`, `_outils_maison()`, `_outils_synthese()` |
 | Navigation : seule l'application du projet (ou une adresse locale) peut être ouverte ; clics d'écriture refusés d'après le libellé, sauf en mode actions ; mot de passe saisi par l'outil ; 20 captures au plus | `ecran.py`, `_ECRITURE`, `_ECRITURE_LIEN` |
 | Bitbucket en lecture seule, projets autorisés, fichiers interdits jamais montrés, réponses bornées | `bitbucket.py` |
+| Documentation Odatio : dépôt, branche et dossier imposés par la configuration (`ODATIO_DOC_*`), chemins sans `..` ni absolu, mêmes garde-fous que Bitbucket (le projet de la doc doit figurer dans `BITBUCKET_PROJETS` s'il est renseigné) | `doc_odatio.py` |
 | Standard jamais cloné : une source `depot` dont le nom contient « standard » n'est pas copiée, l'agent la lit sur Bitbucket | `sources.py`, `distantes()`, `preparer()` |
 | Synthèse sur Bitbucket : aucune source `depot` clonée ; inventaire en GET seulement, fichiers interdits du profil jamais lus, projets autorisés respectés, plafonds de dépôts, de fichiers comparés et de fichiers lus, tout dépassement ou dépôt en erreur reporté dans le rapport ; rien n'est écrit hors de `.cache/synthese/` | `synthese.py`, `inventorier_bitbucket()` ; `bitbucket.py`, `contenu_brut()` |
 | Secrets retirés de l'environnement, posés le temps d'un appel et masqués dans les résultats | `config.py`, `outils._environnement`, `tools/secret_tools.py` |

@@ -19,7 +19,7 @@ from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKCli
 
 from pathlib import Path
 
-from . import bitbucket, config, consignes, documentation, ecran, fichiers, logs_ssh, outils, synthese as synth
+from . import bitbucket, config, consignes, doc_odatio, documentation, ecran, fichiers, logs_ssh, outils, synthese as synth
 from .garde import creer_garde
 
 SERVEUR = "odatio"
@@ -174,6 +174,8 @@ class Session:
 
         if bitbucket.configure(profil):
             liste += self._outils_bitbucket(executer)
+        if doc_odatio.configuree(profil) and not self.synthese:
+            liste += self._outils_doc(executer)
         if self.synthese:               # étape de synthèse client : lecture + outils de synthèse, rien d'autre
             return liste + self._outils_synthese()
         if self.lecture_seule:          # question du manager : aucun outil qui écrit ou agit
@@ -183,6 +185,33 @@ class Session:
             liste += self._outils_ecran()
         liste += self._outils_fichiers()
         return liste
+
+    def _outils_doc(self, executer) -> list:
+        """Documentation Odatio (produit Standard), lue dans ses sources sur Bitbucket : lecture seule."""
+        @tool("doc_sommaire", "Documentation Odatio (Standard) : fichiers d'un dossier de la doc ('' = racine), "
+              "filtrés par un motif facultatif (*.rst, *vague*…).",
+              {"type": "object", "properties": {"dossier": {"type": "string"}, "motif": {"type": "string"}}})
+        async def doc_sommaire(args):
+            return await executer(outils.doc_sommaire, args.get("dossier", ""), args.get("motif", ""))
+
+        @tool("doc_lire", "Documentation Odatio : lit un fichier (lignes numérotées, 400 au plus à partir de "
+              "'debut'). 'chemin' : donné par doc_sommaire ou doc_chercher, ou adresse d'une page du site publié "
+              "(…/development/index.html).",
+              {"type": "object", "properties": {
+                  "chemin": {"type": "string"}, "debut": {"type": "integer", "minimum": 1},
+                  "nombre": {"type": "integer", "minimum": 1, "maximum": bitbucket.LIGNES_MAX}},
+               "required": ["chemin"]})
+        async def doc_lire(args):
+            return await executer(outils.doc_lire, args["chemin"], int(args.get("debut") or 1),
+                                  int(args.get("nombre") or bitbucket.LIGNES_MAX))
+
+        @tool("doc_chercher", "Documentation Odatio : recherche plein texte (branche par défaut du dépôt de la "
+              "doc, si la recherche de Bitbucket est activée).",
+              {"type": "object", "properties": {"texte": {"type": "string"}}, "required": ["texte"]})
+        async def doc_chercher(args):
+            return await executer(outils.doc_chercher, args["texte"])
+
+        return [doc_sommaire, doc_lire, doc_chercher]
 
     def _outils_bitbucket(self, executer) -> list:
         depots_profil = ", ".join(s.nom for s in self.profil.sources if s.depot) or "aucun"
