@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import json
+from datetime import datetime
 from unittest import mock
 
 from odatio_agent import config, documentation, ecran, historique
@@ -84,6 +85,24 @@ class TestHistorique(AvecDossierTemporaire):
         self.assertIsNone(historique.du_ticket("local", "ODA-3"))
         self.assertIsNone(historique.du_ticket("local", ""))
         self.assertIsNone(historique.du_ticket("autre", "ODA-1"))   # cloisonné par projet
+
+    def test_horloge_figee_aucune_conversation_ecrasee(self):
+        """Sous Windows, deux enregistrements rapprochés lisent la même heure : chacun garde son identifiant."""
+        fige = datetime(2026, 1, 1, 10, 0, 0, 123456)
+
+        class Horloge(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fige
+
+        with mock.patch.object(historique, "datetime", Horloge):
+            ids = [historique.enregistrer("local", {"messages": MESSAGES, "ticket": {"cle": f"ODA-{i}", "titre": "T",
+                                                                                     "texte": ""}})
+                   for i in range(3)]
+        self.assertEqual(len(set(ids)), 3)
+        self.assertEqual(ids[0], "20260101-100000-123456")
+        self.assertEqual(sorted(historique.du_ticket("local", f"ODA-{i}")["id"] for i in range(3)), sorted(ids))
+        self.assertEqual(historique.enregistrer("local", {"id": ids[1], "messages": MESSAGES}), ids[1])   # mise à jour
 
     def test_recapitulatif(self):
         texte = historique.recapitulatif(MESSAGES, "Et pour un samedi ?")

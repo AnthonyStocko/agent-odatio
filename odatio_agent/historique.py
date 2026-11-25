@@ -12,7 +12,7 @@ versionné.
 """
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import config
@@ -25,8 +25,13 @@ def _dossier(profil: str) -> Path:
     return config.CACHE / "conversations" / re.sub(r"[^A-Za-z0-9_.-]+", "-", profil)
 
 
-def _identifiant() -> str:
-    return f"{datetime.now():%Y%m%d-%H%M%S-%f}"
+def _identifiant(dossier: Path) -> str:
+    """Horodatage à la microseconde, jamais celui d'une conversation existante : sous Windows, l'horloge avance par
+    paliers (1 à 15 ms) et deux enregistrements rapprochés lisent la même heure ; la seconde écraserait la première."""
+    instant = datetime.now()
+    while (dossier / f"{instant:%Y%m%d-%H%M%S-%f}.json").exists():
+        instant += timedelta(microseconds=1)
+    return f"{instant:%Y%m%d-%H%M%S-%f}"
 
 
 def _valide(identifiant: str) -> bool:
@@ -44,9 +49,9 @@ def titre(messages: list, ticket: dict | None = None) -> str:
 
 def enregistrer(profil: str, conversation: dict) -> str:
     """Écrit la conversation ({id?, reprise, ticket, messages, documentation}) ; renvoie son identifiant."""
-    identifiant = conversation.get("id") if _valide(conversation.get("id")) else _identifiant()
     dossier = _dossier(profil)
     dossier.mkdir(parents=True, exist_ok=True)
+    identifiant = conversation.get("id") if _valide(conversation.get("id")) else _identifiant(dossier)
     chemin = dossier / f"{identifiant}.json"
     cree_le = datetime.now().isoformat(timespec="seconds")
     if chemin.exists():
