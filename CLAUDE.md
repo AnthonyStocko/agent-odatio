@@ -48,7 +48,7 @@ L'agent n'intègre jamais un fichier : l'intégration dans ODATiO reste un geste
 | `odatio_agent/documentation.py`, `video.py`, `ecran.py` | Documentation : validation, vidéo et Word, navigation et captures |
 | `odatio_agent/config.py` | Profils (`profils.toml`), secrets (`.env`), réglages |
 | `odatio_agent/bitbucket.py` | Client Bitbucket Server en lecture |
-| `odatio_agent/doc_odatio.py` | Documentation Odatio (Standard) lue dans ses sources sur Bitbucket, par `bitbucket.py` |
+| `odatio_agent/doc_odatio.py` | Documentation Odatio (Standard) lue dans ses sources sur Bitbucket, par `bitbucket.py` ; page publiée ramenée à sa source, y compris Antora (`modules/<module>/pages/<page>.adoc`, `candidats_antora`) |
 | `odatio_agent/historique.py` | Conversations enregistrées et reprise |
 | `odatio_agent/synthese.py` | Synthèse client : inventaire déterministe, lots, validation, assemblage du rapport |
 | `odatio_agent/ihm_*.py` | Pages Assistant, Synthèse client et Configuration |

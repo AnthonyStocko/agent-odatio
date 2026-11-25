@@ -67,6 +67,34 @@ class TestDocumentation(AvecDoc):
                 outils.doc_sommaire(self.profil())
 
 
+class TestAntora(AvecDoc):
+    """Site Antora : …/<composant>/[<version>/][<module>/]<page>.html vient de modules/<module>/pages/<page>.adoc."""
+    def setUp(self):
+        super().setUp()
+        self.fichiers = ["antora.yml", "modules/ROOT/pages/index.adoc", "modules/ROOT/pages/guide/stock.adoc",
+                         "modules/development/pages/index.adoc", "modules/development/pages/api/rest.adoc"]
+        p = mock.patch.object(doc_odatio, "_fichiers", side_effect=lambda *a: list(self.fichiers))
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.dict(config._SECRETS, {"ODATIO_DOC_DEPOT": "COMPONENT/odatio-docs", "ODATIO_DOC_DOSSIER": ""})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_pages_publiees(self):
+        cas = {"https://site.exemple/doc/odatio-docs/development/index.html": "modules/development/pages/index.adoc",
+               "development/api/rest.html": "modules/development/pages/api/rest.adoc",
+               "https://site.exemple/doc/odatio-docs/index.html": "modules/ROOT/pages/index.adoc",
+               "https://site.exemple/doc/odatio-docs/1.0/guide/stock.html": "modules/ROOT/pages/guide/stock.adoc",
+               "modules/ROOT/pages/index.adoc": "modules/ROOT/pages/index.adoc"}
+        for chemin, attendu in cas.items():
+            with self.subTest(chemin):
+                self.assertEqual(doc_odatio.resoudre(self.profil(), chemin), attendu)
+
+    def test_version_dans_l_adresse(self):
+        self.fichiers = ["modules/ROOT/pages/index.adoc"]                 # « development » : une version
+        self.assertEqual(doc_odatio.resoudre(self.profil(), "development/index.html"), "modules/ROOT/pages/index.adoc")
+
+
 class TestSession(AvecDoc):
     def noms(self, **options) -> tuple:
         s = session.Session(self.profil(), [("standard", str(self.source))], [], config.Reglages(), **options)
